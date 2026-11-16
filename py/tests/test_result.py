@@ -374,3 +374,5 @@ def test_not_permitted_is_reserved_with_not_applied_and_listed_in_the_schema():
     assert_shape({"mws": {"shape": "write-result/0.1", "outcome": "not_applied", "repeat": "no", "code": "not_permitted"}})
     with pytest.raises(ShapeError):
         assert_shape({"mws": {"shape": "write-result/0.1", "outcome": "unknown", "repeat": "read_first", "code": "not_permitted"}})
+    r = k.not_applied("writes are disabled on this server (read-only mode)", code="not_permitted")
+    assert mws(r)["code"] == "not_permitted" and mws(r)["repeat"] == "no" and is_error_of(r) is True
