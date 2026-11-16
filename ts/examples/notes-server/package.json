@@ -1,0 +1,27 @@
+{
+  "name": "@mcp-write-safety/kit-example-notes-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A tiny MCP server over an in-memory store, built only with @mcp-write-safety/kit: one resource (notes, in notebooks), list fields and a bulk delete.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "notes-server": "dist/src/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/main.js",
+    "test": "npm run build && node --test 'dist/test/*.test.js'"
+  },
+  "dependencies": {
+    "@mcp-write-safety/kit": "file:../..",
+    "@modelcontextprotocol/sdk": "1.32.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}

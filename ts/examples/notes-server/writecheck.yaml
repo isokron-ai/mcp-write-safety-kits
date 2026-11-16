@@ -1,0 +1,148 @@
+# mcp-writecheck manifest for notes-server, the example built with @mcp-write-safety/kit.
+#
+# The tester starts the server itself (server.launch) on 127.0.0.1. The store is in memory and
+# starts empty apart from the default notebook "inbox", so every object in it during a run is the
+# tester's own: the backend is disposable, and the run opts in to the destructive selector forms of
+# MWS-TGT-2 (selector.send_empty_forms).
+#
+#   npm ci && npm run build            # in this folder, after building the kit (repository root)
+#   mcp-writecheck run -m writecheck.yaml
+#
+# What this declaration does not give, and why (each is reported "not tested" with the reason):
+#   backend.gate     the store is inside the server process; there is no server-to-backend hop to
+#                    interpose on, so the proxy-assisted procedures cannot run (spec section 12)
+#   server.restart   the store is in memory; a restart empties it, so MWS-RETRY-2 step (e) could
+#                    only show that the backend lost its state
+#   list_edit        remove_tag addresses a tag by its value, not by a position or a row id
+#   settings         the server has no read-only mode and no tool filters (MWS-CFG-1 to CFG-4)
+#   input_required   no tool asks for input (MWS-RETRY-3)
+#   control          there is no platform API beside the MCP server
+
+mws: "0.9"
+
+server:
+  launch:
+    command: [node, dist/src/main.js, --port, "0"]
+    url_from: mcp                      # the first stdout line is {"mcp": "http://127.0.0.1:…/mcp"}
+  cwd: .
+  processes: separate                  # two MCP sessions for two writers (one server process, one store)
+
+target:
+  environment: test
+  confirm: notes-server
+  # list_notebooks declares readOnlyHint: true.
+  guard: { tool: list_notebooks, args: {}, path: notebooks, pattern: "\"inbox\"" }
+
+limits: { write_budget: 6000, writes_per_second: 500, pairs: 40, stale_reps: 3, gate_reps: 2, timeout_ms: 15000, max_fuzz_cases: 200 }
+
+secrets:
+  token_params: [token, sig, signature, access_token]
+  issuing_tools: []                    # no tool exists to issue a credential (spec NF-16)
+
+canaries:
+  - { name: notebooks, tool: list_notebooks, args: {}, path: notebooks }
+
+# Review-only clauses, answered in advance as rules over the captured texts (recorded as self-attested).
+review:
+  by: the kit maintainers (rules written before the run)
+  conflict_says_not_applied: "Nothing was changed"
+  conflict_says_reread: "read it again with"
+  stale_writes_disclosed: "stale delete is not detected|without a version check"
+  rejection_gives_reason: "expected |must |is required|is not an argument"
+
+# Spec 7.3, rule 11: how the kit words what a result says. Every write result opens with a fixed
+# phrase that mirrors the structured outcome field of the MWS result shape v0:
+#   "Applied:"               structuredContent.outcome = "applied"
+#   "Not applied:"           structuredContent.outcome = "not_applied", nothing remains applied
+#   "Not applied in full:"   structuredContent.outcome = "not_applied", with structuredContent.applied listed
+#   "Outcome unknown:"       structuredContent.outcome = "unknown"
+# and a replay carries a line "Replay: ...". These patterns read those phrases; this manifest format
+# has no key that names a structured field for the purpose, so the text mirror is what is declared.
+patterns:
+  outcome_unknown: '\bOutcome unknown:'
+  applied: '(?<!not )\bapplied:|\bapplied items \([1-9]'
+  not_applied: '\bNot applied( in full)?:'
+  not_used: '\bnot used\b'
+  in_progress: '\bstill in progress\b'
+  replay: '(^|\n)Replay: '
+  repeat_refused: '\balready used with different arguments\b'
+  unavailable: '\bservice unavailable\b|\brate limit(ed)?\b'
+
+# Arguments for the tag tools, called on a scratch note by the annotation checks (MWS-ANN-1 to ANN-3, ANN-5).
+calls:
+  add_tag: { resource: note, args: { id: "{{id}}", tag: added } }
+  remove_tag: { resource: note, args: { id: "{{id}}", tag: a } }
+
+resources:
+  # Notebooks: the containers notes live in. The caller chooses the key (MWS-TGT-3).
+  - name: notebook
+    create: { tool: create_notebook, args: { key: "{{key}}", name: "{{marker}}" }, id: object.id, name_path: key }
+    read: { tool: list_notebooks, args: {}, items: notebooks, match: key }
+    key: { arg: key, vary: { arg: name, path: name } }
+    list: { tool: list_notebooks, args: {}, items: notebooks, id: key, name: name }
+    delete: { tool: delete_notebook, args: { key: "{{id}}" } }
+    no_version_check: [delete_notebook]   # notebooks carry no version (MWS-CONC-5: the description says so)
+    cleanup: delete
+
+  # Notes, through update_note (a field patch that requires the version).
+  - name: note
+    scope:
+      resource: notebook
+      arg: notebook
+      default: inbox
+      list: { tool: list_notes, args: { notebook: "{{scope}}" }, items: notes, id: id, name: title }
+    # Every optional field set to a value that is not its default, so that a reset shows (MWS-UPD-1).
+    create: { tool: create_note, args: { notebook: "{{?scope}}", title: "{{marker}}", body: seeded, tags: [a, b, c], status: archived }, id: object.id, name_path: title }
+    read: { tool: get_note, args: { id: "{{id}}" }, ignore: [updated_at, created_at] }
+    update:
+      tool: update_note
+      mode: field_patch
+      args: { id: "{{id}}", "{{field}}": "{{value}}", expected_version: "{{version}}" }
+      cases:
+        - { name: rename_and_clear_tags, args: { title: "{{prefix}}renamed", tags: [] }, expect: { title: "{{prefix}}renamed", tags: [] } }
+    fields:
+      - { path: status, values: [open, archived] }
+      - { path: body, values: [first-body, second-body], empty: "" }
+    version: { read: version, arg: expected_version }
+    delete: { tool: delete_note, args: { id: "{{id}}", expected_version: "{{version}}" } }
+    list: { tool: list_notes, args: { title_prefix: "{{prefix}}" }, items: notes, id: id, name: title }
+    missing_id: n-999999999
+    cleanup: delete
+    # MWS-RETRY-2: the key is kept by the server (MemoryIdempotencyStore), not by a backend.
+    # The kit's result shape has no replay field; a replay is marked by a line in the text.
+    idempotency:
+      args: { notebook: "{{?scope}}", title: "{{marker}}" }
+      key: { arg: idempotency_key }
+      replay_text: '(^|\n)Replay: '
+      backend_key: false
+      key_record_survives: { graceful: false, kill: false }
+    # MWS-TGT-2: delete_notes requires a selector. The forms are sent only after MWS-TGT-1 is held for
+    # delete_notes itself (spec 7.3, rule 1); narrow limits that call to the objects named with the marker.
+    selector:
+      tool: delete_notes
+      args: { notebook: "{{scope}}" }
+      narrow: { title_prefix: "{{marker}}" }
+      send_empty_forms: true
+      forms:
+        - { name: omitted, args: {} }
+        - { name: empty_prefix, args: { title_prefix: "" } }
+        - { name: empty_ids, args: { ids: [] } }
+    multi:
+      - tool: delete_notes
+        args: { notebook: "{{scope}}", ids: "{{ids}}" }
+        effect: deleted
+        invalid_id: n-999999999
+        report: { applied: applied, id: id }
+    creates:
+      - name: note
+        tool: create_note
+        args: { notebook: "{{?scope}}", title: "{{marker}}" }
+        find: { tool: list_notes, args: { title_prefix: "{{marker}}" }, items: notes, id: id, match: title }
+        idempotency: { key: { arg: idempotency_key } }
+    failures:
+      - { name: create_in_missing_notebook, tool: create_note, args: { notebook: "{{prefix}}missing", title: "{{prefix}}x" } }
+      - { name: update_missing_note, tool: update_note, args: { id: "{{missing_id}}", expected_version: 1, title: "{{prefix}}x" } }
+    # MWS-IN-5: values valid by update_note's schema to try (the longest title and body the schema allows).
+    try_values:
+      - { arg: title, length: 200 }
+      - { arg: body, length: 10000 }
