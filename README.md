@@ -1,3 +1,10 @@
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/mws-mark-dark.svg">
+    <img src="assets/mws-mark.svg" alt="MCP Write-Safety Requirements mark" width="72" height="72">
+  </picture>
+</p>
+
 # MCP Write-Safety kits
 
 Helper libraries for the write tools of an MCP server, in TypeScript and Python. They cover the parts of the MCP Write-Safety Requirements that are easy to get wrong by hand.
