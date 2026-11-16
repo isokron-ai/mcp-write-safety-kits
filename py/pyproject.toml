@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-write-safety-kit"
+version = "0.1.0"
+description = "Helpers for MCP write tools that meet the hard parts of the MCP Write-Safety Requirements (MWS 0.9) by default: version checks, idempotency keys, strict inputs, truthful results, explicit annotations."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+authors = [{ name = "Stormhaven Enterprises LLC (IsoKron)" }, { name = "Joshua Bryan" }]
+maintainers = [{ name = "IsoKron" }]
+keywords = ["mcp", "model context protocol", "mws", "write safety", "idempotency", "fastmcp"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+dependencies = ["mcp>=1.10"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mws_kit = ["py.typed", "*.schema.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
