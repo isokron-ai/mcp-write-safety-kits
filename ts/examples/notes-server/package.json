@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/main.js",
-    "test": "npm run build && node --test 'dist/test/*.test.js'"
+    "test": "npm run build && node --test dist/test/*.test.js"
   },
   "dependencies": {
     "@mcp-write-safety/kit": "file:../..",
