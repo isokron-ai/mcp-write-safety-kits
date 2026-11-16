@@ -244,6 +244,8 @@ The table points from a `violated` record of `mcp-writecheck` (or its GitHub Act
 
 `examples/notes-server` is a small MCP server over an in-memory store (notebooks and notes, a list field, a bulk delete), built only with the kit and the 1.x SDK. Its `writecheck.yaml` is the manifest for `mcp-writecheck`, and its README records the results of a run.
 
+The repository's CI (`.github/workflows/ts.yml` at the root) runs the kit's and the example's tests on Node 20, 22 and 24 on every push and pull request.
+
 ## Develop
 
 ```sh
@@ -254,4 +256,6 @@ cd examples/notes-server && npm ci && npm test
 
 ## Licence
 
-Apache-2.0; see `LICENSE` and `NOTICE`. The requirement IDs are from the MCP Write-Safety Requirements, version 0.9, Joshua Bryan, IsoKron, CC BY 4.0.
+Apache-2.0; see `LICENSE` and `NOTICE`. The schema file `schema/write-result-0.1.schema.json` is under CC BY 4.0 (see `schema/LICENSE-schema.md`). The requirement IDs are from the MCP Write-Safety Requirements, version 0.9, Joshua Bryan, IsoKron, CC BY 4.0.
+
+Made by [IsoKron](https://isokron.ai/?utm_source=github&utm_medium=readme&utm_campaign=mcp-write-safety-kits).

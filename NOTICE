@@ -1,0 +1,16 @@
+MCP Write-Safety kits
+Copyright 2026 Stormhaven Enterprises LLC (IsoKron) and Joshua Bryan
+
+This repository holds two packages, each with its own NOTICE:
+  ts/  @mcp-write-safety/kit  (ts/NOTICE)
+  py/  mcp-write-safety-kit   (py/NOTICE)
+
+The code is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The schema files ts/schema/write-result-0.1.schema.json and
+py/src/mws_kit/write-result-0.1.schema.json are licensed under CC BY 4.0
+(https://creativecommons.org/licenses/by/4.0/), not Apache-2.0; see the
+LICENSE-schema.md note beside each.
+
+The documentation refers to requirement IDs of the MCP Write-Safety Requirements
+(MWS), version 0.9, Joshua Bryan, IsoKron, licensed under CC BY 4.0.

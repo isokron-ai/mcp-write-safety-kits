@@ -16,3 +16,6 @@ The documentation refers to requirement IDs of the MCP Write-Safety Requirements
 (MWS), version 0.9, Joshua Bryan, IsoKron, licensed under CC BY 4.0
 (https://creativecommons.org/licenses/by/4.0/). The kit adds no requirement; the
 specification is the reference.
+
+The file schema/write-result-0.1.schema.json is licensed under CC BY 4.0, not Apache-2.0; see
+schema/LICENSE-schema.md.

@@ -40,7 +40,7 @@ Every write result carries the write-result/0.1 shape (draft Annex B-9) in `stru
 
 ### Results of one run
 
-mcp-writecheck at commit 0295ed6 (0.1.0-dev.0, MWS 0.9), run `f54e8a2a5d`, plan `d4a0fabba2bb19b3`, 16 November 2026 (UTC), against the write-result/0.1 build. An earlier run against the provisional `result/v0` build (run `31f0300bbd`) gave the same verdict on every record. One row per requirement; the write paths for each verdict are in brackets. There is no total: `not tested` and `not applicable` rows make any count meaningless (spec 5.2). No record is `violated`.
+mcp-writecheck at commit e613620 (0.1.0-dev.0, MWS 0.9), run `4d5ed5e493`, plan `7eb58cb932213878`, 16 November 2026 (UTC). One row per requirement; the write paths for each verdict are in brackets. There is no total: `not tested` and `not applicable` rows make any count meaningless (spec 5.2). No record is `violated`.
 
 | Requirement | Level | Verdicts (write paths) |
 |---|---|---|
@@ -54,7 +54,7 @@ mcp-writecheck at commit 0295ed6 (0.1.0-dev.0, MWS 0.9), run `f54e8a2a5d`, plan 
 | MWS-CONC-6 | SHOULD | held (note:update_note, note:delete_note) |
 | MWS-TGT-1 | MUST | held (note:create_note, note:delete_notes) |
 | MWS-TGT-2 | MUST | held (note:delete_notes) |
-| MWS-TGT-3 | MUST | held (notebook:create_notebook) |
+| MWS-TGT-3 | MUST | not tested (notebook:create_notebook: the manifest does not declare `key.class` with the words of the tool's description it relies on) |
 | MWS-RES-1 | MUST | held (note:update_note, note:delete_note); not tested for the other write tools (not built in the preview) |
 | MWS-RES-2 | MUST | held (note:update_note, note:create_note); not tested for the other write tools (not built in the preview); proxy-assisted step not run (no gate) |
 | MWS-RES-3 | MUST | held (note:create_note) |
@@ -72,11 +72,11 @@ mcp-writecheck at commit 0295ed6 (0.1.0-dev.0, MWS 0.9), run `f54e8a2a5d`, plan 
 | MWS-CFG-1 to CFG-4 | MUST, SHOULD | not tested (the server has no read-only mode and no tool filters; the manifest cannot declare their absence) |
 | MWS-ANN-1 | MUST | not observed (the three read tools); not applicable (the write tools) |
 | MWS-ANN-2, ANN-5 | MUST, SHOULD | not observed (notebook:create_notebook, note:create_note, note:add_tag); not applicable (the tools that declare `destructiveHint: true`) |
-| MWS-ANN-3 | MUST | not observed (notebook:delete_notebook, note:update_note, note:add_tag, note:remove_tag); not applicable (the creates); not tested (note:delete_note: the tester sent `expected_version: null`, see below) |
+| MWS-ANN-3 | MUST | not observed (notebook:delete_notebook, note:update_note, note:delete_note, note:add_tag, note:remove_tag); not applicable (the creates) |
 | MWS-ANN-4 | SHOULD | held (every tool) |
 | MWS-SEC-1 | MUST | not observed (every tool; the server holds no credential) |
 
 Two notes on the `not tested` rows:
 
 - Several come from the server having no backend hop (`backend.gate`) and no platform API (`control`): the store is inside the server process. The spec names this case (section 12).
-- MWS-ANN-3 on `delete_note`: the annotation check renders the delete's `{{version}}` without an object, so it sent `expected_version: null`, which the tool refuses. This is a limit of the preview tester for a delete that requires a version, not a finding about the server.
+- MWS-TGT-3 on `create_notebook`: the tester at this commit asks the declaration to classify a create that names its object (create or upsert) and to quote the words of the tool's description relied on. The manifest does not declare that yet.

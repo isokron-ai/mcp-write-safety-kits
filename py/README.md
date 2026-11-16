@@ -303,4 +303,7 @@ reason.
 ## Licence
 
 Apache-2.0. See `LICENSE` and `NOTICE`. Copyright 2026 Stormhaven Enterprises LLC (IsoKron) and
-Joshua Bryan.
+Joshua Bryan. The schema file `src/mws_kit/write-result-0.1.schema.json` is under CC BY 4.0 (see
+`src/mws_kit/LICENSE-schema.md`).
+
+Made by [IsoKron](https://isokron.ai/?utm_source=github&utm_medium=readme&utm_campaign=mcp-write-safety-kits).

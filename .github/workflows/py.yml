@@ -1,0 +1,70 @@
+# Unit tests of the Python kit (py/) on MCP Python SDK 1.x and 2.x, and mypy, on every push and pull request.
+
+name: py
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: py-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: "3.10", sdk: "mcp>=1.19,<2" }
+          - { python: "3.13", sdk: "mcp>=1.19,<2" }
+          - { python: "3.10", sdk: "mcp>=2,<3" }
+          - { python: "3.13", sdk: "mcp>=2,<3" }
+          # The oldest SDK the kit declares. That SDK release does not import with the newest pydantic.
+          - { python: "3.10", sdk: "mcp==1.19.*", also: "pydantic==2.11.*" }
+    defaults:
+      run:
+        working-directory: py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the kit with the SDK line under test
+        env:
+          SDK: ${{ matrix.sdk }}
+          ALSO: ${{ matrix.also }}
+        run: python -m pip install -e ".[test]" "$SDK" ${ALSO:+"$ALSO"}
+      - name: Tests
+        run: python -m pytest -q
+
+  mypy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: ["mcp>=1.19,<2", "mcp>=2,<3"]
+    defaults:
+      run:
+        working-directory: py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install
+        env:
+          SDK: ${{ matrix.sdk }}
+        run: python -m pip install -e . "$SDK" mypy
+      - name: mypy
+        run: python -m mypy src/mws_kit
