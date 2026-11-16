@@ -17,7 +17,7 @@
 // defined, not at call time: a keyword the validator ignored would be a constraint the tool
 // advertises and does not enforce.
 
-import { notApplied, q } from "./result.js";
+import { notApplied, pointerOf, q, type Scalar } from "./result.js";
 import type { CallToolResult } from "./types.js";
 
 /** The JSON Schema subset the validator enforces. */
@@ -70,6 +70,8 @@ const TYPES: readonly JsonType[] = ["string", "number", "integer", "boolean", "o
 /** One refused argument. `path` is the argument's name, with nested parts (`details.severity`, `tags[2]`). */
 export interface InputIssue {
   path: string;
+  /** The same argument as a JSON Pointer into the arguments (`/details/severity`, `/tags/2`). */
+  pointer: string;
   /** What was wrong, in one clause: `expected integer, got string "5"`. */
   reason: string;
   /** What the schema expects. */
@@ -201,8 +203,9 @@ function typeMatches(t: JsonType, actual: ReturnType<typeof jsonTypeOf>): boolea
   return t === actual || (t === "number" && actual === "integer");
 }
 
-function checkValue(schema: JsonSchema, value: unknown, path: string, issues: InputIssue[]): void {
-  const add = (reason: string, expected: string) => issues.push({ path, reason, expected, sent: shown(value) });
+function checkValue(schema: JsonSchema, value: unknown, path: string, segs: Array<string | number>, issues: InputIssue[]): void {
+  const ptr = pointerOf(segs);
+  const add = (reason: string, expected: string) => issues.push({ path, pointer: ptr, reason, expected, sent: shown(value) });
   const actual = jsonTypeOf(value);
   if (schema.type !== undefined) {
     const allowed = Array.isArray(schema.type) ? schema.type : [schema.type];
@@ -244,7 +247,7 @@ function checkValue(schema: JsonSchema, value: unknown, path: string, issues: In
       const dup = value.findIndex((x, i) => value.slice(0, i).some((y) => jsonEqual(x, y)));
       if (dup >= 0) add(`must not repeat an item; ${shown(value[dup])} is repeated`, "items without repeats");
     }
-    if (schema.items) value.forEach((item, i) => checkValue(schema.items!, item, join(path, i), issues));
+    if (schema.items) value.forEach((item, i) => checkValue(schema.items!, item, join(path, i), [...segs, i], issues));
   }
   if (actual === "object") {
     const obj = value as Record<string, unknown>;
@@ -254,11 +257,12 @@ function checkValue(schema: JsonSchema, value: unknown, path: string, issues: In
     const props = schema.properties ?? {};
     const known = Object.keys(props);
     for (const k of keys) {
-      if (Object.prototype.hasOwnProperty.call(props, k)) checkValue(props[k]!, obj[k], join(path, k), issues);
+      if (Object.prototype.hasOwnProperty.call(props, k)) checkValue(props[k]!, obj[k], join(path, k), [...segs, k], issues);
       else if (schema.additionalProperties !== true) {
         const near = nearest(k, known);
         issues.push({
           path: join(path, k),
+          pointer: pointerOf([...segs, k]),
           reason: `is not an argument of this tool${near ? ` (did you mean ${q(near)}?)` : ""}`,
           expected: known.length ? `one of the defined arguments ${known.map((x) => q(x)).join(", ")}` : "no arguments",
           sent: shown(obj[k]),
@@ -269,7 +273,7 @@ function checkValue(schema: JsonSchema, value: unknown, path: string, issues: In
       if (!Object.prototype.hasOwnProperty.call(obj, r)) {
         const s = props[r];
         const expected = s?.type ? (Array.isArray(s.type) ? s.type.join(" or ") : s.type) : "a value";
-        issues.push({ path: join(path, r), reason: "is required and was not sent", expected, sent: "nothing" });
+        issues.push({ path: join(path, r), pointer: pointerOf([...segs, r]), reason: "is required and was not sent", expected, sent: "nothing" });
       }
     }
   }
@@ -278,7 +282,7 @@ function checkValue(schema: JsonSchema, value: unknown, path: string, issues: In
 /** Validates arguments against a schema. Returns the issues; an empty list means the arguments are valid. */
 export function validateArguments(schema: JsonSchema, args: unknown): InputIssue[] {
   const issues: InputIssue[] = [];
-  checkValue(schema, args === undefined ? {} : args, "", issues);
+  checkValue(schema, args === undefined ? {} : args, "", [], issues);
   return issues;
 }
 
@@ -287,15 +291,34 @@ export function describeIssue(i: InputIssue): string {
   return i.path ? `argument ${q(i.path)} ${i.reason.startsWith("is ") ? i.reason : `was refused: ${i.reason}`}` : `the arguments were refused: ${i.reason}`;
 }
 
-/** The tool execution error for refused arguments (MWS-IN-4): names each argument, the expectation and what was sent. */
-export function inputError(issues: InputIssue[]): CallToolResult {
+/** Options for inputError. */
+export interface InputErrorOptions {
+  /** Default "invalid_argument"; "version_required" for a missing version (NF-3). */
+  code?: string;
+  object?: { type?: string; id?: Scalar };
+  operation?: string;
+}
+
+/**
+ * The tool execution error for refused arguments (MWS-IN-4): `outcome: "not_applied"`, `code:
+ * "invalid_argument"`, `argument` a JSON Pointer to the first refused argument, and a text that
+ * names each argument, what was expected and what was sent.
+ */
+export function inputError(issues: InputIssue[], o: InputErrorOptions = {}): CallToolResult {
   const [first, ...rest] = issues;
+  const summary = first ? describeIssue(first) : "the arguments were refused";
   return notApplied({
-    summary: first ? describeIssue(first) : "the arguments were refused",
+    summary,
+    code: o.code ?? "invalid_argument",
+    argument: first?.pointer,
+    message: `${summary.charAt(0).toUpperCase()}${summary.slice(1)}.`,
+    object: o.object,
+    operation: o.operation,
+    repeat: "no",
     notes: [
       ...rest.map((i) => `Also: ${describeIssue(i)}`),
       ...issues.map((i) => `Argument ${q(i.path || "(arguments)")}: expected ${i.expected}; sent ${i.sent}`),
-      "Correct the arguments and call again",
+      "Correct the arguments before calling again",
     ],
   });
 }

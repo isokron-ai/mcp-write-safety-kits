@@ -10,8 +10,8 @@
 //   delete_notebook a delete with no version, and a description that says so
 
 import {
-  ToolSet, defineTool, applied, notApplied, partial, compareAndSet, withIdempotency, idempotencyKeyProperty,
-  MemoryIdempotencyStore, NotAppliedError, q, type CallToolResult, type JsonSchema,
+  ToolSet, defineTool, applied, notApplied, itemsResult, compareAndSet, withIdempotency, idempotencyKeyProperty,
+  MemoryIdempotencyStore, NotAppliedError, outputSchemaFor, q, type CallToolResult, type JsonSchema, type ReadWith,
 } from "@mcp-write-safety/kit";
 import { DEFAULT_NOTEBOOK, NOTE_FIELDS, type Note, type NoteFields, type NotesStore, type Status } from "./store.js";
 
@@ -31,10 +31,17 @@ function data(value: Record<string, unknown>): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
 }
 
-/** The note without its timestamps, for conflicts (compact, and every value the caller can set). */
-function compact(n: Note): Record<string, unknown> {
-  return { id: n.id, notebook: n.notebook, title: n.title, body: n.body, tags: n.tags, status: n.status, version: n.version };
+/** The note as get_note returns it, for conflicts: every field the caller may read; nothing secret, nothing left out. */
+function asRead(n: Note): { state: Record<string, unknown> } {
+  return { state: { ...n } };
 }
+
+/** The structured output of every write tool: only the write-result shape (outputSchema, B-9 advice). */
+const WRITE_OUTPUT = outputSchemaFor();
+
+const readNote = (id: string): ReadWith => ({ tool: "get_note", arguments: { id } });
+const readNotebooks: ReadWith = { tool: "list_notebooks", arguments: {} };
+const readNotes = (notebook?: string): ReadWith => ({ tool: "list_notes", arguments: notebook ? { notebook } : {} });
 
 export function buildTools(store: NotesStore): ToolSet {
   const keys = new MemoryIdempotencyStore({ ttlMs: KEY_TTL_MS });
@@ -60,13 +67,14 @@ export function buildTools(store: NotesStore): ToolSet {
       required: ["key", "name"],
     },
     hints: { destructive: false, idempotent: false, openWorld: false },
-    settleWith: "list_notebooks",
+    readWith: () => readNotebooks,
+    outputSchema: WRITE_OUTPUT,
     handler: ({ key, name }) => {
       if (store.notebooks.has(key)) {
-        return notApplied({ summary: `notebook ${q(key)} already exists, so it was not created again`, object: { id: key }, settleWith: "list_notebooks" });
+        return notApplied({ summary: `notebook ${q(key)} already exists, so it was not created again`, code: "already_exists", operation: "create", object: { type: "notebook", id: key }, readWith: readNotebooks });
       }
       store.notebooks.set(key, { key, name });
-      return applied({ summary: `created notebook ${q(key)} named ${q(name)}`, object: { id: key }, changed: ["key", "name"], safeToRepeat: true, settleWith: "list_notebooks" });
+      return applied({ summary: `created notebook ${q(key)} named ${q(name)}`, operation: "create", object: { type: "notebook", id: key }, changed: ["/key", "/name"], readWith: readNotebooks });
     },
   });
 
@@ -76,14 +84,16 @@ export function buildTools(store: NotesStore): ToolSet {
     description: `Deletes an empty notebook. A notebook that holds notes is refused, and so is "${DEFAULT_NOTEBOOK}". Notebooks carry no version, so a stale delete is not detected: a notebook changed since you read it is deleted all the same.`,
     inputSchema: { type: "object", properties: { key: NOTEBOOK_KEY }, required: ["key"] },
     hints: { destructive: true, idempotent: true, openWorld: false },
-    settleWith: "list_notebooks",
+    readWith: () => readNotebooks,
+    outputSchema: WRITE_OUTPUT,
     handler: ({ key }) => {
-      if (key === DEFAULT_NOTEBOOK) throw new NotAppliedError(`notebook ${q(key)} is the default notebook and cannot be deleted`, { object: { id: key } });
-      if (!store.notebooks.has(key)) throw new NotAppliedError(`notebook ${q(key)} was not found`, { object: { id: key } });
+      const object = { type: "notebook", id: key };
+      if (key === DEFAULT_NOTEBOOK) throw new NotAppliedError(`notebook ${q(key)} is the default notebook and cannot be deleted`, { code: "default_notebook", object });
+      if (!store.notebooks.has(key)) throw new NotAppliedError(`notebook ${q(key)} was not found`, { code: "not_found", object });
       const held = store.listNotes({ notebook: key }).length;
-      if (held) throw new NotAppliedError(`notebook ${q(key)} holds ${held} note(s); delete them first`, { object: { id: key } });
+      if (held) throw new NotAppliedError(`notebook ${q(key)} holds ${held} note(s); delete them first`, { code: "not_empty", object });
       store.notebooks.delete(key);
-      return applied({ summary: `deleted notebook ${q(key)}`, object: { id: key }, safeToRepeat: true, settleWith: "list_notebooks" });
+      return applied({ summary: `deleted notebook ${q(key)}`, operation: "delete", object });
     },
   });
 
@@ -109,7 +119,7 @@ export function buildTools(store: NotesStore): ToolSet {
     hints: { openWorld: false },
     handler: ({ id }) => {
       const n = store.getNote(id);
-      return n ? data({ ...n }) : notApplied({ summary: `note ${q(id)} was not found` });
+      return n ? data({ ...n }) : notApplied({ summary: `note ${q(id)} was not found`, code: "not_found" });
     },
   });
 
@@ -132,18 +142,19 @@ export function buildTools(store: NotesStore): ToolSet {
       required: ["title"],
     },
     hints: { destructive: false, idempotent: false, openWorld: false },
-    settleWith: "list_notes",
-    handler: (args) => withIdempotency({ store: keys, scope: "create_note", args, settleWith: "list_notes" }, async () => {
+    readWith: (a) => readNotes(a.notebook ?? DEFAULT_NOTEBOOK),
+    outputSchema: WRITE_OUTPUT,
+    handler: (args) => withIdempotency({ store: keys, scope: "create_note", args, readWith: readNotes(args.notebook ?? DEFAULT_NOTEBOOK) }, async () => {
       const notebook = args.notebook ?? DEFAULT_NOTEBOOK;
-      if (!store.notebooks.has(notebook)) return notApplied({ summary: `notebook ${q(notebook)} was not found, so no note was created` });
+      if (!store.notebooks.has(notebook)) return notApplied({ summary: `notebook ${q(notebook)} was not found, so no note was created`, code: "not_found", operation: "create" });
       const n = store.createNote(notebook, { title: args.title, body: args.body ?? "", tags: args.tags ?? [], status: args.status ?? "open" });
       const set = ["title", ...NOTE_FIELDS.filter((f) => f !== "title" && args[f] !== undefined)];
       return applied({
         summary: `created note ${q(n.id)} in notebook ${q(n.notebook)}`,
-        object: { id: n.id, version: n.version },
+        operation: "create",
+        object: { type: "note", id: n.id, version: n.version, scope: n.notebook },
         changed: set,
-        safeToRepeat: args.idempotency_key !== undefined,
-        settleWith: "get_note",
+        readWith: readNote(n.id),
       });
     }),
   });
@@ -158,12 +169,14 @@ export function buildTools(store: NotesStore): ToolSet {
       required: ["id", "expected_version"],
     },
     hints: { destructive: true, idempotent: true, openWorld: false },
-    settleWith: "get_note",
+    readWith: (a) => readNote(a.id),
+    versionArgument: "expected_version",
+    outputSchema: WRITE_OUTPUT,
     handler: ({ id, expected_version, ...fields }) => compareAndSet<Note>({
       id,
-      noun: "note",
+      type: "note",
       expectedVersion: expected_version,
-      readTool: "get_note",
+      readWith: readNote(id),
       read: () => {
         const n = store.getNote(id);
         return n && { version: n.version, state: n };
@@ -172,7 +185,7 @@ export function buildTools(store: NotesStore): ToolSet {
         const { note, changed } = store.patchNote(id, fields);
         return { version: note.version, changed };
       },
-      conflictState: compact,
+      conflictState: asRead,
       summary: (r) => r.changed?.length ? `updated note ${q(id)}; it is now at version ${q(r.version)}` : `note ${q(id)} already had these values; nothing changed`,
     }),
   });
@@ -183,12 +196,15 @@ export function buildTools(store: NotesStore): ToolSet {
     description: "Deletes one note. Requires expected_version: the delete is refused with a conflict, and nothing is deleted, if the note changed since that version.",
     inputSchema: { type: "object", properties: { id: NOTE_ID, expected_version: VERSION }, required: ["id", "expected_version"] },
     hints: { destructive: true, idempotent: true, openWorld: false },
-    settleWith: "get_note",
+    readWith: (a) => readNote(a.id),
+    versionArgument: "expected_version",
+    outputSchema: WRITE_OUTPUT,
     handler: ({ id, expected_version }) => compareAndSet<Note>({
       id,
-      noun: "note",
+      type: "note",
+      operation: "delete",
       expectedVersion: expected_version,
-      readTool: "get_note",
+      readWith: readNote(id),
       read: () => {
         const n = store.getNote(id);
         return n && { version: n.version, state: n };
@@ -197,7 +213,7 @@ export function buildTools(store: NotesStore): ToolSet {
         store.deleteNote(id);
         return { version: cur.version };
       },
-      conflictState: compact,
+      conflictState: asRead,
       summary: () => `deleted note ${q(id)}`,
     }),
   });
@@ -208,14 +224,16 @@ export function buildTools(store: NotesStore): ToolSet {
     description: "Adds one tag to a note. A tag the note already has changes nothing. Other tags are kept.",
     inputSchema: { type: "object", properties: { id: NOTE_ID, tag: TAG }, required: ["id", "tag"] },
     hints: { destructive: false, idempotent: true, openWorld: false },
-    settleWith: "get_note",
+    readWith: (a) => readNote(a.id),
+    outputSchema: WRITE_OUTPUT,
     handler: ({ id, tag }) => {
       const n = store.getNote(id);
-      if (!n) return notApplied({ summary: `note ${q(id)} was not found`, settleWith: "get_note" });
-      if (n.tags.includes(tag)) return applied({ summary: `note ${q(id)} already has tag ${q(tag)}; nothing changed`, object: { id, version: n.version }, changed: [], safeToRepeat: true, settleWith: "get_note" });
-      if (n.tags.length >= 20) return notApplied({ summary: `note ${q(id)} already has 20 tags, the most it can hold`, object: { id, version: n.version } });
+      const object = { type: "note", id };
+      if (!n) return notApplied({ summary: `note ${q(id)} was not found`, code: "not_found", operation: "add_tag", object });
+      if (n.tags.includes(tag)) return applied({ summary: `note ${q(id)} already has tag ${q(tag)}; nothing changed`, operation: "add_tag", object: { ...object, version: n.version }, changed: [], readWith: readNote(id) });
+      if (n.tags.length >= 20) return notApplied({ summary: `note ${q(id)} already has 20 tags, the most it can hold`, code: "too_many_tags", operation: "add_tag", object });
       const { note, changed } = store.patchNote(id, { tags: [...n.tags, tag] });
-      return applied({ summary: `added tag ${q(tag)} to note ${q(id)}`, object: { id, version: note.version }, changed, safeToRepeat: true, settleWith: "get_note" });
+      return applied({ summary: `added tag ${q(tag)} to note ${q(id)}`, operation: "add_tag", object: { ...object, version: note.version }, changed, readWith: readNote(id) });
     },
   });
 
@@ -225,13 +243,15 @@ export function buildTools(store: NotesStore): ToolSet {
     description: "Removes one tag from a note, by its name, so it never removes another tag. A tag the note does not have changes nothing.",
     inputSchema: { type: "object", properties: { id: NOTE_ID, tag: TAG }, required: ["id", "tag"] },
     hints: { destructive: true, idempotent: true, openWorld: false },
-    settleWith: "get_note",
+    readWith: (a) => readNote(a.id),
+    outputSchema: WRITE_OUTPUT,
     handler: ({ id, tag }) => {
       const n = store.getNote(id);
-      if (!n) return notApplied({ summary: `note ${q(id)} was not found`, settleWith: "get_note" });
-      if (!n.tags.includes(tag)) return applied({ summary: `note ${q(id)} does not have tag ${q(tag)}; nothing changed`, object: { id, version: n.version }, changed: [], safeToRepeat: true, settleWith: "get_note" });
+      const object = { type: "note", id };
+      if (!n) return notApplied({ summary: `note ${q(id)} was not found`, code: "not_found", operation: "remove_tag", object });
+      if (!n.tags.includes(tag)) return applied({ summary: `note ${q(id)} does not have tag ${q(tag)}; nothing changed`, operation: "remove_tag", object: { ...object, version: n.version }, changed: [], readWith: readNote(id) });
       const { note, changed } = store.patchNote(id, { tags: n.tags.filter((t) => t !== tag) });
-      return applied({ summary: `removed tag ${q(tag)} from note ${q(id)}`, object: { id, version: note.version }, changed, safeToRepeat: true, settleWith: "get_note" });
+      return applied({ summary: `removed tag ${q(tag)} from note ${q(id)}`, operation: "remove_tag", object: { ...object, version: note.version }, changed, readWith: readNote(id) });
     },
   });
 
@@ -250,35 +270,43 @@ export function buildTools(store: NotesStore): ToolSet {
       required: ["notebook"],
     },
     hints: { destructive: true, idempotent: true, openWorld: false },
-    settleWith: "list_notes",
+    readWith: (a) => readNotes(a.notebook),
+    outputSchema: WRITE_OUTPUT,
     handler: ({ notebook, title_prefix, tag, ids }) => {
       if (title_prefix === undefined && tag === undefined && ids === undefined) {
-        return notApplied({ summary: "delete_notes needs a selector (title_prefix, tag or ids), and none was sent; nothing was deleted" });
+        return notApplied({ summary: "delete_notes needs a selector (title_prefix, tag or ids), and none was sent; nothing was deleted", code: "selector_required", operation: "delete" });
       }
-      if (!store.notebooks.has(notebook)) return notApplied({ summary: `notebook ${q(notebook)} was not found; nothing was deleted` });
+      if (!store.notebooks.has(notebook)) return notApplied({ summary: `notebook ${q(notebook)} was not found; nothing was deleted`, code: "not_found", operation: "delete" });
       if (ids) {
-        const reasons = new Map<string, string>();
+        const reasons = new Map<string, { code: string; message: string }>();
         for (const id of ids) {
           const n = store.getNote(id);
-          if (!n) reasons.set(id, "not found");
-          else if (n.notebook !== notebook) reasons.set(id, `in notebook ${q(n.notebook)}, not ${q(notebook)}`);
+          if (!n) reasons.set(id, { code: "not_found", message: `note ${q(id)} was not found` });
+          else if (n.notebook !== notebook) reasons.set(id, { code: "other_scope", message: `note ${q(id)} is in notebook ${q(n.notebook)}, not ${q(notebook)}` });
         }
         if (reasons.size) {
-          return partial({
+          // All or nothing: every item is named; the valid ones were not attempted.
+          return itemsResult({
             summary: `${reasons.size} of ${ids.length} listed note(s) could not be deleted, so none was (all or nothing)`,
-            applied: [],
-            failed: ids.map((id) => ({ id, reason: reasons.get(id) ?? "not deleted: another item failed and the batch is all or nothing" })),
-            settleWith: "list_notes",
+            operation: "delete",
+            items: ids.map((id, index) => {
+              const r = reasons.get(id);
+              return r ? { index, id, outcome: "not_applied" as const, ...r } : { index, id, outcome: "not_attempted" as const, message: "not deleted: another item failed and the batch is all or nothing" };
+            }),
+            code: "invalid_item",
+            readWith: readNotes(notebook),
           });
         }
       }
       const matched = store.listNotes({ notebook, title_prefix, tag, ids });
       for (const n of matched) store.deleteNote(n.id);
-      return applied({
+      return itemsResult({
         summary: `deleted ${matched.length} note(s) from notebook ${q(notebook)}`,
-        applied: matched.map((n) => ({ id: n.id, version: n.version })),
-        safeToRepeat: false,
-        settleWith: "list_notes",
+        operation: "delete",
+        object: { type: "note", scope: notebook },
+        items: matched.map((n, index) => ({ index, id: n.id, version: String(n.version), outcome: "applied" as const })),
+        appliedCount: matched.length,
+        readWith: readNotes(notebook),
       });
     },
   });

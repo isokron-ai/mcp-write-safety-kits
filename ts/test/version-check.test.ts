@@ -10,7 +10,7 @@ function store() {
   const writes: string[] = [];
   const cas = (id: string, expected: number | undefined, title: string, extra: Partial<Parameters<typeof compareAndSet<Doc>>[0]> = {}) =>
     compareAndSet<Doc>({
-      id, noun: "doc", expectedVersion: expected, readTool: "get_doc",
+      id, type: "doc", expectedVersion: expected, readWith: { tool: "get_doc", arguments: { id } },
       read: () => docs.get(id),
       write: (cur) => {
         const next = { version: Number(cur.version) + 1, state: { ...cur.state, title } };
@@ -29,9 +29,10 @@ test("matching version: applied, receipt with the new version and changed fields
   const r = await s.cas("d1", 1, "b");
   const sh = readResult(r)!;
   assert.equal(sh.outcome, "applied");
-  assert.deepEqual(sh.object, { id: "d1", version: 2 });
-  assert.deepEqual(sh.changed, ["title"]);
-  assert.equal(sh.safe_to_repeat, true, "a write guarded by the version cannot apply twice");
+  assert.deepEqual(sh.object, { type: "doc", id: "d1", version: "2" });
+  assert.deepEqual(sh.changed, ["/title"]);
+  assert.equal(sh.operation, "update");
+  assert.equal(sh.version_argument, "expected_version");
 });
 
 test("stale version: conflict, nothing written, current version and state carried", async () => {
@@ -42,9 +43,10 @@ test("stale version: conflict, nothing written, current version and state carrie
   assert.deepEqual(s.writes, ["b"]);
   const sh = readResult(r)!;
   assert.equal(sh.outcome, "not_applied");
-  assert.deepEqual(sh.conflict, { current_version: 2, current_state: { title: "b", tags: ["x"] } });
+  assert.deepEqual(sh.conflict, { current_version: "2", version_source: "backend", current_state: { title: "b", tags: ["x"] } });
+  assert.equal(sh.code, "conflict");
+  assert.equal(sh.repeat, "read_first");
   assert.match(text(r), /Nothing was changed/);
-  assert.match(text(r), /^Current version: 2\.$/m);
 });
 
 test("versions compare as strings by default (\"2\" matches 2)", async () => {
@@ -54,17 +56,18 @@ test("versions compare as strings by default (\"2\" matches 2)", async () => {
 
 test("require-version mode: a call without the version is refused, naming the argument", async () => {
   const s = store();
-  const r = await s.cas("d1", undefined, "b", { overrideArg: "force" });
+  const r = await s.cas("d1", undefined, "b");
   assert.equal(r.isError, true);
   assert.deepEqual(s.writes, []);
-  assert.match(text(r), /argument "expected_version" is required: send the version you read with "get_doc", or set "force"/);
+  assert.equal(readResult(r)!.code, "version_required");
+  assert.equal(readResult(r)!.argument, "/expected_version");
+  assert.match(text(r), /argument "expected_version" is required: send the version you read with "get_doc"/);
 });
 
 test("optional-version mode writes unchecked without a version", async () => {
   const s = store();
   const r = await s.cas("d1", undefined, "b", { requireVersion: false });
   assert.equal(readResult(r)!.outcome, "applied");
-  assert.equal(readResult(r)!.safe_to_repeat, false);
 });
 
 test("explicit override (default off) skips the check only where no version was sent", async () => {
@@ -77,43 +80,45 @@ test("missing object: not applied, names the read tool", async () => {
   const s = store();
   const r = await s.cas("nope", 1, "b");
   assert.match(text(r), /^Not applied: doc "nope" was not found/);
-  assert.equal(readResult(r)!.settle_with, "get_doc");
+  assert.deepEqual(readResult(r)!.read_with, { tool: "get_doc", arguments: { id: "nope" } });
+  assert.equal(readResult(r)!.code, "not_found");
 });
 
 test("a backend version refusal becomes the same conflict", async () => {
   const r = await compareAndSet<Doc>({
-    id: "d", expectedVersion: 1, readTool: "get_doc", noun: "doc",
+    id: "d", expectedVersion: 1, readWith: { tool: "get_doc", arguments: { id: "d" } }, type: "doc",
     read: () => ({ version: 1, state: { title: "a", tags: [] } }),
     write: () => { throw new VersionConflictError({ version: 5, state: { title: "z" } }); },
   });
-  assert.deepEqual(readResult(r)!.conflict, { current_version: 5, current_state: { title: "z" } });
+  assert.deepEqual(readResult(r)!.conflict, { current_version: "5", version_source: "backend", current_state: { title: "z" } });
 });
 
 test("a write that throws is an unknown outcome, safe to repeat with the version it carried", async () => {
   const r = await compareAndSet<Doc>({
-    id: "d", expectedVersion: 1, readTool: "get_doc",
+    id: "d", expectedVersion: 1, readWith: { tool: "get_doc", arguments: { id: "d" } },
     read: () => ({ version: 1, state: { title: "a", tags: [] } }),
     write: () => { throw Object.assign(new Error("reset"), { code: "ECONNRESET" }); },
   });
   const sh = readResult(r)!;
   assert.equal(sh.outcome, "unknown");
-  assert.equal(sh.safe_to_repeat, true);
-  assert.equal(sh.settle_with, "get_doc");
+  assert.equal(sh.repeat, "same_version");
+  assert.equal(sh.read_with!.tool, "get_doc");
   assert.match(text(r), /same expected_version 1/);
 });
 
 test("conflictState trims the state", async () => {
   const s = store();
   await s.cas("d1", 1, "b");
-  const r = await s.cas("d1", 1, "c", { conflictState: (st) => ({ title: st.title }) });
+  const r = await s.cas("d1", 1, "c", { conflictState: (st) => ({ state: { title: st.title }, omitted: ["tags"] }) });
   assert.deepEqual(readResult(r)!.conflict!.current_state, { title: "b" });
+  assert.deepEqual(readResult(r)!.conflict!.omitted, ["/tags"]);
 });
 
 test("two concurrent writers with the same version: exactly one applies (per-object lock)", async () => {
   const docs = new Map<string, Current<Doc>>([["d", { version: 1, state: { title: "a", tags: [] } }]]);
   let applied = 0;
   const one = (title: string) => compareAndSet<Doc>({
-    id: "d", expectedVersion: 1, readTool: "get_doc",
+    id: "d", expectedVersion: 1, readWith: { tool: "get_doc", arguments: { id: "d" } },
     read: async () => { await new Promise((r) => setTimeout(r, 5)); return docs.get("d"); },
     write: async (cur) => { await new Promise((r) => setTimeout(r, 5)); docs.set("d", { version: Number(cur.version) + 1, state: { ...cur.state, title } }); applied++; return { version: Number(cur.version) + 1, changed: ["title"] }; },
   });

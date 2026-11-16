@@ -22,10 +22,10 @@ test("update_note: receipt, then a conflict for a stale version that carries the
   const c = readResult(await tools.call("create_note", { title: "t", tags: ["a"] }))!;
   const id = c.object!.id;
   const u = await tools.call("update_note", { id, expected_version: 1, body: "x" });
-  assert.deepEqual(readResult(u), { mws: "result/v0", outcome: "applied", safe_to_repeat: true, object: { id, version: 2 }, changed: ["body"], settle_with: "get_note" });
+  assert.deepEqual(readResult(u), { shape: "write-result/0.1", outcome: "applied", repeat: "no", operation: "update", object: { type: "note", id, version: "2" }, changed: ["/body"], read_with: { tool: "get_note", arguments: { id } }, version_argument: "expected_version" });
   const stale = await tools.call("update_note", { id, expected_version: 1, status: "archived" });
   assert.equal(stale.isError, true);
-  assert.equal(readResult(stale)!.conflict!.current_version, 2);
+  assert.equal(readResult(stale)!.conflict!.current_version, "2");
   assert.equal((readResult(stale)!.conflict!.current_state as { body: string }).body, "x");
 });
 
@@ -34,6 +34,8 @@ test("update_note refuses a call without the version", async () => {
   await tools.call("create_note", { title: "t" });
   const r = await tools.call("update_note", { id: "n-1", title: "u" });
   assert.match(text(r), /argument "expected_version" is required and was not sent/);
+  assert.equal(readResult(r)!.code, "version_required");
+  assert.equal(readResult(r)!.argument, "/expected_version");
 });
 
 test("create_note with a key is applied once", async () => {
@@ -42,7 +44,7 @@ test("create_note with a key is applied once", async () => {
   const b = await tools.call("create_note", { title: "t", idempotency_key: "key-00000001" });
   assert.equal(store.notes.size, 1);
   assert.deepEqual(readResult(b)!.object, readResult(a)!.object);
-  assert.match(text(b), /Replay:/);
+  assert.equal(readResult(b)!.replayed, true);
   const c = await tools.call("create_note", { title: "other", idempotency_key: "key-00000001" });
   assert.equal(c.isError, true);
   assert.equal(store.notes.size, 1);
@@ -58,9 +60,11 @@ test("delete_notes: a selector is required, and a bad id deletes nothing and nam
   const bad = await tools.call("delete_notes", { notebook: "inbox", ids: ["n-1", "n-99", "n-2"] });
   assert.equal(bad.isError, true);
   assert.equal(store.notes.size, 2);
-  assert.deepEqual(readResult(bad)!.failed!.map((f) => f.id), ["n-1", "n-99", "n-2"]);
+  assert.deepEqual(readResult(bad)!.items!.map((i) => [i.id, i.outcome]), [["n-1", "not_attempted"], ["n-99", "not_applied"], ["n-2", "not_attempted"]]);
+  assert.equal(readResult(bad)!.outcome, "not_applied");
   const ok = await tools.call("delete_notes", { notebook: "inbox", ids: ["n-1", "n-2"] });
-  assert.deepEqual(readResult(ok)!.applied!.map((x) => x.id), ["n-1", "n-2"]);
+  assert.deepEqual(readResult(ok)!.items!.map((x) => x.id), ["n-1", "n-2"]);
+  assert.equal(readResult(ok)!.applied_count, 2);
   assert.equal(store.notes.size, 0);
 });
 
@@ -94,7 +98,7 @@ test("over HTTP: initialize, tools/list and a call", async () => {
     const list = await post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
     assert.equal((list.result!["tools"] as unknown[]).length, 11);
     const call = await post({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_note", arguments: { title: "x" } } });
-    assert.equal((call.result!["structuredContent"] as { outcome: string }).outcome, "applied");
+    assert.equal((call.result!["structuredContent"] as { mws: { outcome: string } }).mws.outcome, "applied");
     const unknown = await post({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "nope", arguments: {} } });
     assert.equal(unknown.error!.code, -32602);
   } finally {

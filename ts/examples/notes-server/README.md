@@ -36,11 +36,11 @@ mcp-writecheck plan -m writecheck.yaml
 mcp-writecheck run  -m writecheck.yaml --confirm-target notes-server --plan-hash <hash from plan>
 ```
 
-The manifest declares the outcome patterns from the text mirror of the result shape (`Applied:`, `Not applied:`, `Outcome unknown:`, `Replay:`), because the manifest format at the tested commit has no key that names a structured field for the purpose (spec 7.3, rule 11, allows either).
+Every write result carries the write-result/0.1 shape (draft Annex B-9) in `structuredContent.mws`, and every write tool declares an `outputSchema` built with `outputSchemaFor()`. The manifest format at the tested commit cannot adopt a shape by name and version (the draft's edit to rule 11 and Annex E), so the manifest declares patterns over the first text block's opening words and the `"outcome"` member of the JSON text block, and reads a replay from the structured member `mws.replayed` (`idempotency.replay_marker`).
 
 ### Results of one run
 
-mcp-writecheck at commit 0295ed6 (0.1.0-dev.0, MWS 0.9), run `31f0300bbd`, plan `61ea10218337fa85`, 16 November 2026 (UTC). One row per requirement; the write paths for each verdict are in brackets. There is no total: `not tested` and `not applicable` rows make any count meaningless (spec 5.2). No record is `violated`.
+mcp-writecheck at commit 0295ed6 (0.1.0-dev.0, MWS 0.9), run `f54e8a2a5d`, plan `d4a0fabba2bb19b3`, 16 November 2026 (UTC), against the write-result/0.1 build. An earlier run against the provisional `result/v0` build (run `31f0300bbd`) gave the same verdict on every record. One row per requirement; the write paths for each verdict are in brackets. There is no total: `not tested` and `not applicable` rows make any count meaningless (spec 5.2). No record is `violated`.
 
 | Requirement | Level | Verdicts (write paths) |
 |---|---|---|

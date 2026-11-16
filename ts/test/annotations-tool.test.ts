@@ -32,7 +32,7 @@ const echo = defineTool<{ n: number }>({
   description: "Bumps.",
   inputSchema: { type: "object", properties: { n: { type: "integer" } }, required: ["n"] },
   hints: { destructive: false },
-  settleWith: "get",
+  readWith: () => ({ tool: "get", arguments: {} }),
   handler: async ({ n }) => {
     if (n === 0) throw new NotAppliedError("n must not be zero here");
     if (n < 0) throw Object.assign(new Error("reset"), { code: "ECONNRESET" });
@@ -52,7 +52,7 @@ test("defineTool validates before the handler, and turns throws into truthful re
   assert.match(text(await echo.call({ n: 0 })), /^Not applied: n must not be zero here/);
   const u = await echo.call({ n: -1 });
   assert.equal(readResult(u)!.outcome, "unknown");
-  assert.equal(readResult(u)!.settle_with, "get");
+  assert.equal(readResult(u)!.read_with!.tool, "get");
 });
 
 test("a read tool's internal error is an error result that leaks nothing", async () => {

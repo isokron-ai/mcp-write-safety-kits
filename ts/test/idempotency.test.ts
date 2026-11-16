@@ -8,14 +8,14 @@ function harness(store = new MemoryIdempotencyStore()) {
   let n = 0;
   const created: string[] = [];
   const create = (args: Record<string, unknown>, o: { delayMs?: number; fail?: "refuse" | "throw" | "unknown" } = {}) =>
-    withIdempotency({ store, scope: "create_note", args, settleWith: "list_notes" }, async () => {
+    withIdempotency({ store, scope: "create_note", args, readWith: { tool: "list_notes", arguments: {} } }, async () => {
       if (o.delayMs) await new Promise((r) => setTimeout(r, o.delayMs));
       if (o.fail === "refuse") return notApplied({ summary: "notebook not found" });
       if (o.fail === "throw") throw new Error("socket closed");
-      if (o.fail === "unknown") return unknownOutcome({ summary: "sent, no answer", settleWith: "list_notes" });
+      if (o.fail === "unknown") return unknownOutcome({ summary: "sent, no answer", readWith: { tool: "list_notes", arguments: {} } });
       const id = `n-${++n}`;
       created.push(id);
-      return applied({ summary: `created note ${q(id)}`, object: { id, version: 1 }, changed: ["title"], safeToRepeat: true });
+      return applied({ summary: `created note ${q(id)}`, operation: "create", object: { id, version: 1 }, changed: ["title"] });
     });
   return { store, created, create };
 }
@@ -29,10 +29,12 @@ test("same key, same arguments: applied once; the repeat returns the first resul
   const sb = readResult(b)!;
   assert.equal(sb.outcome, "applied");
   assert.deepEqual(sb.object, sa.object);
-  assert.deepEqual(sb.changed, [], "the repeat changed nothing");
+  assert.deepEqual(sb.changed, sa.changed, "the first call's outcome, as it was");
+  assert.equal(sb.replayed, true);
+  assert.equal(sa.replayed, undefined);
   assert.equal(b.isError, undefined);
   assert.match(text(b), /^Applied: created note "n-1"\./);
-  assert.match(text(b), /Replay: an earlier call with idempotency_key "key-0001" and the same arguments/);
+  assert.match(text(b), /^Replay: this call repeats an earlier call/m);
   assert.deepEqual(b._meta, { "mws/replay": true });
   assert.equal(a._meta, undefined);
 });
@@ -45,6 +47,7 @@ test("same key, different arguments: refused, nothing applied", async () => {
   assert.equal(r.isError, true);
   assert.equal(readResult(r)!.outcome, "not_applied");
   assert.match(text(r), /idempotency_key "key-0002" was already used with different arguments/);
+  assert.equal(readResult(r)!.argument, "/idempotency_key");
 });
 
 test("a different key is a new write", async () => {
@@ -65,14 +68,14 @@ test("concurrent calls with the same key never write twice (the second waits and
   const h = harness();
   const rs = await Promise.all(Array.from({ length: 10 }, () => h.create({ title: "t", idempotency_key: "key-0005" }, { delayMs: 10 })));
   assert.deepEqual(h.created, ["n-1"]);
-  for (const r of rs) assert.deepEqual(readResult(r)!.object, { id: "n-1", version: 1 });
-  assert.equal(rs.filter((r) => /Replay:/.test(text(r))).length, 9);
+  for (const r of rs) assert.deepEqual(readResult(r)!.object, { id: "n-1", version: "1" });
+  assert.equal(rs.filter((r) => readResult(r)!.replayed).length, 9);
 });
 
 test("concurrent calls with concurrent: refuse: the second is refused as in progress", async () => {
   const store = new MemoryIdempotencyStore();
   let n = 0;
-  const call = () => withIdempotency({ store, scope: "s", args: { k: 1, idempotency_key: "key-0006" }, settleWith: "get", concurrent: "refuse" }, async () => {
+  const call = () => withIdempotency({ store, scope: "s", args: { k: 1, idempotency_key: "key-0006" }, readWith: { tool: "get", arguments: {} }, concurrent: "refuse" }, async () => {
     await new Promise((r) => setTimeout(r, 10));
     n++;
     return applied({ summary: "x", object: { id: 1 } });
@@ -82,6 +85,7 @@ test("concurrent calls with concurrent: refuse: the second is refused as in prog
   assert.equal(readResult(a)!.outcome, "applied");
   assert.equal(b.isError, true);
   assert.match(text(b), /still in progress; this call applied nothing/);
+  assert.equal(readResult(b)!.code, "in_progress");
 });
 
 test("a refused first call releases the key: the repeat is a new attempt", async () => {
@@ -102,7 +106,8 @@ test("an unknown first outcome: the repeat applies nothing and says the outcome 
     assert.deepEqual(h.created, []);
     const s = readResult(r)!;
     assert.equal(s.outcome, "unknown");
-    assert.equal(s.settle_with, "list_notes");
+    assert.equal(s.repeat, "read_first");
+    assert.equal(s.read_with!.tool, "list_notes");
     assert.match(text(r), /It is not known whether the change was applied/);
     assert.match(text(r), /this call applied nothing/);
   }
@@ -130,7 +135,7 @@ test("maxEntries drops the oldest finished keys", async () => {
 test("keys are scoped: the same key on two tools is two keys", async () => {
   const store = new MemoryIdempotencyStore();
   let n = 0;
-  const run = (scope: string) => withIdempotency({ store, scope, args: { a: 1, idempotency_key: "key-0010" }, settleWith: "g" }, async () => applied({ summary: `n ${++n}`, object: { id: n } }));
+  const run = (scope: string) => withIdempotency({ store, scope, args: { a: 1, idempotency_key: "key-0010" }, readWith: { tool: "g", arguments: {} } }, async () => applied({ summary: `n ${++n}`, object: { id: n } }));
   await run("one");
   await run("two");
   assert.equal(n, 2);
@@ -153,7 +158,7 @@ test("the key argument's schema and description state the retry rule and the lif
 test("a result without the shape is still stored and replayed", async () => {
   const store = new MemoryIdempotencyStore();
   let n = 0;
-  const run = () => withIdempotency({ store, scope: "s", args: { idempotency_key: "key-0011" }, settleWith: "g" }, async (): Promise<CallToolResult> => ({ content: [{ type: "text", text: `made ${++n}` }] }));
+  const run = () => withIdempotency({ store, scope: "s", args: { idempotency_key: "key-0011" }, readWith: { tool: "g", arguments: {} } }, async (): Promise<CallToolResult> => ({ content: [{ type: "text", text: `made ${++n}` }] }));
   await run();
   const b = await run();
   assert.equal(n, 1);
@@ -164,7 +169,7 @@ test("a write that throws a refusal releases the key", async () => {
   const { NotAppliedError } = await import("../src/index.js");
   const store = new MemoryIdempotencyStore();
   let n = 0;
-  const run = (fail: boolean) => withIdempotency({ store, scope: "s", args: { idempotency_key: "key-0012" }, settleWith: "g" }, async () => {
+  const run = (fail: boolean) => withIdempotency({ store, scope: "s", args: { idempotency_key: "key-0012" }, readWith: { tool: "g", arguments: {} } }, async () => {
     if (fail) throw new NotAppliedError("refused");
     return applied({ summary: `made ${++n}`, object: { id: n } });
   });

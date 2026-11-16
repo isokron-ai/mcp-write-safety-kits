@@ -4,8 +4,8 @@
 
 import { readOnlyHints, writeHints, type ExplicitAnnotations, type ReadToolHints, type WriteToolHints } from "./annotations.js";
 import { guardWrite } from "./outcome.js";
-import { notApplied, q } from "./result.js";
-import { strictInput, type JsonSchema } from "./strict-input.js";
+import { notApplied, q, type ReadWith } from "./result.js";
+import { inputError, strictInput, type JsonSchema } from "./strict-input.js";
 import type { CallToolResult, MaybePromise, Tool } from "./types.js";
 
 interface ToolBase<A> {
@@ -28,10 +28,16 @@ export interface WriteToolSpec<A> extends ToolBase<A> {
   kind: "write";
   hints?: WriteToolHints;
   /**
-   * The read tool that shows whether a write of this tool took effect. When the handler throws, the
-   * answer says the outcome is unknown and names this tool (MWS-RES-2).
+   * The read that shows whether a write of this call took effect, from the call's (valid)
+   * arguments. When the handler throws, the answer says the outcome is unknown and gives this read
+   * as `read_with` (MWS-RES-2).
    */
-  settleWith: string;
+  readWith(args: A): ReadWith;
+  /**
+   * The argument that takes the version, where the schema requires it. A call refused only because
+   * it left this argument out gets code "version_required" (NF-3) instead of "invalid_argument".
+   */
+  versionArgument?: string;
 }
 
 export type ToolSpec<A> = ReadToolSpec<A> | WriteToolSpec<A>;
@@ -61,15 +67,21 @@ export function defineTool<A = Record<string, unknown>>(spec: ToolSpec<A>): Defi
     definition,
     async call(args, extra) {
       const v = input.validate(args);
-      if (!v.ok) return v.result;
+      if (!v.ok) {
+        const va = spec.kind === "write" ? spec.versionArgument : undefined;
+        if (va && v.issues.length === 1 && v.issues[0]!.path === va && v.issues[0]!.sent === "nothing") {
+          return inputError(v.issues, { code: "version_required" });
+        }
+        return v.result;
+      }
       const run = async () => spec.handler(v.value as A, extra);
       if (spec.kind === "write") {
-        return guardWrite(run, { settleWith: spec.settleWith, what: `the call to ${q(spec.name)} stopped before it could report what it wrote` });
+        return guardWrite(run, { readWith: spec.readWith(v.value as A), what: `the call to ${q(spec.name)} stopped before it could report what it wrote` });
       }
       try {
         return await run();
       } catch {
-        return notApplied({ summary: `${q(spec.name)} could not read: an internal error occurred` });
+        return notApplied({ summary: `${q(spec.name)} could not read: an internal error occurred`, code: "internal_error" });
       }
     },
   };

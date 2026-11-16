@@ -63,6 +63,8 @@ test("a type error says what was expected and what was sent", () => {
   assert.match(t, /^Not applied: argument "priority" was refused: expected integer, got string "5"\. Nothing was changed\./);
   assert.match(t, /Argument "priority": expected integer; sent "5"/);
   assert.equal(readResult(v.result)!.outcome, "not_applied");
+  assert.equal(readResult(v.result)!.code, "invalid_argument");
+  assert.equal(readResult(v.result)!.argument, "/priority");
 });
 
 test("MWS-IN-2 / IN-7: an unknown argument is refused, naming it and the nearest real one", () => {
@@ -100,8 +102,9 @@ test("MWS-IN-3: every declared constraint is enforced", () => {
   }
 });
 
-test("nested paths are named", () => {
+test("nested paths are named, with a JSON Pointer", () => {
   assert.equal(issues({ id: "a", tags: ["ok", 5] })[0]!.path, "tags[1]");
+  assert.equal(issues({ id: "a", tags: ["ok", 5] })[0]!.pointer, "/tags/1");
 });
 
 test("lengths count code points", () => {

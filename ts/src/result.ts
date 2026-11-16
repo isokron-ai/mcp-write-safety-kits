@@ -1,319 +1,511 @@
-// The MWS result shape v0 (provisional) and the builders that produce it.
+// The write-result shape, version 0.1 (MWS 0.9 draft Annex B-9), and the builders that produce it.
 //
-// Every write result carries the shape in `structuredContent` and mirrors it in one text block, in
-// plain sentences with every value quoted or given as JSON, so that a caller that reads only the
-// text learns the same facts as one that reads the structure (MWS-RES-1, RES-2, RES-4, ATOM-1,
-// CONC-4, CONC-6). The shape is shared with the Python kit; it may change before MWS 1.0.
+// The shape is the member `mws` of `structuredContent`; the tool's own output, if any, sits beside
+// it. Every result also says in text what the shape says: the first text block is a plain sentence
+// in the spec's words ("Applied", "Not applied", "Partly applied", "Outcome unknown", "Accepted")
+// that names the read to make, and a second text block carries the serialized JSON of
+// `structuredContent` (MWS-RES-1, RES-2, RES-4, ATOM-1, CONC-4, CONC-6).
+//
+// The shape is a draft (B-9 is not yet in the published spec) and may change before MWS 1.0.
 
 import type { CallToolResult } from "./types.js";
 
-/** The value of the `mws` field: the name and version of the shape. */
-export const RESULT_SHAPE = "result/v0" as const;
+/** The shape's name. */
+export const SHAPE_NAME = "write-result" as const;
+/** The version this kit writes. */
+export const SHAPE_VERSION = "0.1" as const;
+/** The value of `mws.shape`. */
+export const SHAPE = `${SHAPE_NAME}/${SHAPE_VERSION}` as const;
 
-/** What happened to the write the caller asked for. */
-export type Outcome = "applied" | "not_applied" | "unknown";
+/** What the write did, as a whole. */
+export type Outcome = "applied" | "not_applied" | "partial" | "unknown" | "accepted";
+/** Whether, and how, the same call may be sent again. */
+export type Repeat = "no" | "yes" | "same_key" | "same_version" | "read_first";
+/** The outcome of one item or step. */
+export type ItemOutcome = "applied" | "not_applied" | "not_attempted" | "unknown";
+/** The six codes whose meaning MWS fixes. A server may use others (lowercase letters, digits, underscores). */
+export type FixedCode = "conflict" | "locked" | "version_required" | "invalid_argument" | "no_answer" | "not_sent";
 
-/** An object identifier. The shape does not fix a JSON type; give it as the read tool gives it. */
-export type Id = string | number;
+/** A value given for an identifier or a version. The shape carries these as strings; the kit converts. */
+export type Scalar = string | number;
 
-/**
- * A version, in the JSON type the write tool's version argument accepts (a number, or a string such
- * as an entity tag), so that a caller can send it back as it is.
- */
-export type Version = string | number;
-
-/** An object, by identifier, and its version where the resource has one. */
+/** The object written. Every member is a string in the shape. */
 export interface ObjectRef {
-  id: Id;
-  version?: Version;
+  type?: string;
+  id?: string;
+  version?: string;
+  scope?: string;
 }
 
-/** An item that was not applied, and why. */
-export interface FailedItem {
-  id: Id;
-  reason: string;
+/** One item or step of a write of several. */
+export interface Item {
+  index: number;
+  step?: string;
+  id?: string;
+  version?: string;
+  outcome: ItemOutcome;
+  code?: string;
+  message?: string;
 }
 
-/** The current state of an object whose write was refused because it changed. */
-export interface ConflictInfo {
-  current_version: Version;
-  current_state: Record<string, unknown>;
+/** The state a write was refused against. */
+export interface Conflict {
+  current_version?: string;
+  version_source?: "backend" | "server";
+  current_state?: Record<string, unknown>;
+  omitted?: string[];
+  held_by?: string;
 }
 
-/** MWS result shape v0 (provisional). Fields that are not relevant to a result are omitted. */
-export interface MwsResult {
-  mws: typeof RESULT_SHAPE;
+/** A read that shows the object's current state. */
+export interface ReadWith {
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+
+/** The write-result shape, version 0.1. `shape` and `outcome` are required; every other member is optional. */
+export interface WriteResult {
+  shape: typeof SHAPE;
   outcome: Outcome;
-  /**
-   * True when sending exactly the same call again cannot apply the write a second time and cannot
-   * undo another writer's change: for example a refusal that applied nothing, a write guarded by the
-   * version it carried, or a write carrying an idempotency key the server honours.
-   */
-  safe_to_repeat: boolean;
+  repeat?: Repeat;
+  operation?: string;
   object?: ObjectRef;
   changed?: string[];
-  applied?: ObjectRef[];
-  failed?: FailedItem[];
-  conflict?: ConflictInfo;
-  settle_with?: string;
+  replayed?: true;
+  items?: Item[];
+  applied_count?: number;
+  code?: string;
+  message?: string;
+  argument?: string;
+  conflict?: Conflict;
+  read_with?: ReadWith;
+  version_argument?: string;
 }
 
-/** Options shared by every builder. */
-export interface TextOptions {
-  /**
-   * One plain sentence about the write, without a final period, e.g. `updated note "n-3"`. It
-   * follows the fixed opening word ("Applied:", "Not applied:", "Outcome unknown:"). Quote every
-   * value in it (use `q()`).
-   */
-  summary: string;
-  /** Further sentences, appended after the facts of the shape. */
-  notes?: string[];
+/** The value of `isError` each outcome implies (B-9, the outcome table). */
+export function isErrorFor(outcome: Outcome): boolean {
+  return outcome === "not_applied" || outcome === "partial" || outcome === "unknown";
 }
 
-/** Quotes a value for a sentence: strings and other values as JSON, so each can be read only one way. */
+/** Quotes a value for a sentence: every value as JSON, so each can be read only one way. */
 export function q(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-function ref(r: ObjectRef): string {
-  return r.version === undefined ? q(r.id) : `${q(r.id)} (version ${q(r.version)})`;
+/** A JSON Pointer (RFC 6901) for a top-level field name; a value that already starts with "/" is kept. */
+export function pointer(field: string): string {
+  if (field.startsWith("/")) return field;
+  return `/${field.replace(/~/g, "~0").replace(/\//g, "~1")}`;
 }
+
+/** A JSON Pointer from path segments: pointerOf(["tags", 2]) is "/tags/2". "" for no segments. */
+export function pointerOf(segments: Array<string | number>): string {
+  return segments.map((s) => `/${String(s).replace(/~/g, "~0").replace(/\//g, "~1")}`).join("");
+}
+
+const str = (v: Scalar | undefined): string | undefined => (v === undefined ? undefined : String(v));
+
+/** An ObjectRef from values that may be numbers. */
+export function objectRef(o: { type?: string; id?: Scalar; version?: Scalar; scope?: Scalar }): ObjectRef {
+  return clean({ type: o.type, id: str(o.id), version: str(o.version), scope: str(o.scope) });
+}
+
+function clean<T extends object>(o: T): T {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
+}
+
+const CODE = /^[a-z0-9_]+$/;
+const OUTCOMES: readonly Outcome[] = ["applied", "not_applied", "partial", "unknown", "accepted"];
+const REPEATS: readonly Repeat[] = ["no", "yes", "same_key", "same_version", "read_first"];
+const ITEM_OUTCOMES: readonly ItemOutcome[] = ["applied", "not_applied", "not_attempted", "unknown"];
+
+/**
+ * Checks a shape this kit is about to write. Throws a TypeError naming the first problem: a value
+ * out of its list, a combination B-9 rules out (`unknown` with `repeat: "yes"`, a version without
+ * a state or `read_first`, an object version on a refusal), or a code with other characters.
+ */
+export function assertShape(r: WriteResult): void {
+  const fail = (m: string): never => {
+    throw new TypeError(`write-result/0.1: ${m}`);
+  };
+  if (r.shape !== SHAPE) fail(`shape must be ${q(SHAPE)}`);
+  if (!OUTCOMES.includes(r.outcome)) fail(`outcome ${q(r.outcome)} is not one of ${OUTCOMES.map(q).join(", ")}`);
+  if (r.repeat !== undefined && !REPEATS.includes(r.repeat)) fail(`repeat ${q(r.repeat)} is not one of ${REPEATS.map(q).join(", ")}`);
+  if (r.repeat === "yes" && (r.outcome === "unknown" || r.outcome === "partial" || r.outcome === "accepted")) {
+    fail(`repeat "yes" is not allowed with outcome ${q(r.outcome)} (MWS-RES-2: an open outcome is repeated only after a read or with the key or version the call carried)`);
+  }
+  if (r.code !== undefined && !CODE.test(r.code)) fail(`code ${q(r.code)} must be lowercase letters, digits and underscores`);
+  for (const it of r.items ?? []) {
+    if (!Number.isInteger(it.index) || it.index < 0) fail(`items[].index must be an integer from 0`);
+    if (!ITEM_OUTCOMES.includes(it.outcome)) fail(`items[].outcome ${q(it.outcome)} is not one of ${ITEM_OUTCOMES.map(q).join(", ")}`);
+    if (it.code !== undefined && !CODE.test(it.code)) fail(`items[].code ${q(it.code)} must be lowercase letters, digits and underscores`);
+  }
+  if (r.applied_count !== undefined && (!Number.isInteger(r.applied_count) || r.applied_count < 0)) fail("applied_count must be a non-negative integer");
+  if (r.outcome === "not_applied" && r.object?.version !== undefined) fail("on a refusal, object.version is left out (the current version goes in conflict.current_version)");
+  if (r.conflict && r.code !== "conflict" && r.code !== "locked") fail(`conflict is present only where code is "conflict" or "locked"`);
+  if (r.conflict?.current_version !== undefined && r.conflict.current_state === undefined && r.repeat !== "read_first") {
+    fail(`a current_version needs current_state or repeat "read_first" (MWS-CONC-6: a version without the state is not enough)`);
+  }
+  for (const p of [...(r.changed ?? []), ...(r.conflict?.omitted ?? []), ...(r.argument !== undefined ? [r.argument] : [])]) {
+    if (p !== "" && !p.startsWith("/")) fail(`${q(p)} is not a JSON Pointer`);
+  }
+  if (r.read_with && (typeof r.read_with.tool !== "string" || typeof r.read_with.arguments !== "object" || r.read_with.arguments === null)) {
+    fail("read_with needs tool (a string) and arguments (an object)");
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Text
+
+const HEADLINE: Record<Outcome, string> = {
+  applied: "Applied",
+  not_applied: "Not applied",
+  partial: "Partly applied",
+  unknown: "Outcome unknown",
+  accepted: "Accepted",
+};
 
 function sentence(s: string): string {
   const t = s.trim();
   return /[.!?]$/.test(t) ? t : `${t}.`;
 }
 
+/** Options for the first text block. */
+export interface TextOptions {
+  /**
+   * One plain sentence about the write, without a final period, e.g. `updated note "n-3"`. It
+   * follows the opening words ("Applied:", "Not applied:", ...). Quote every value in it (`q()`).
+   */
+  summary: string;
+  /** Further sentences, after the fixed ones. */
+  notes?: string[];
+  /** The argument that carries an idempotency key, for the sentence on `repeat: "same_key"`. */
+  keyArgument?: string;
+  /** The key the call carried, for the same sentence. */
+  key?: string;
+  /** The version the call carried, for the sentence on `repeat: "same_version"`. */
+  sentVersion?: Scalar;
+}
+
+function readSentence(r: WriteResult): string | null {
+  if (!r.read_with) return null;
+  return `read it with ${q(r.read_with.tool)} and the arguments ${JSON.stringify(r.read_with.arguments)}`;
+}
+
 /**
- * Renders the text block that mirrors a result. The first word is fixed by the outcome, so that a
- * tester's declared pattern can decide what the result says (spec 7.3, rule 11):
- *
- *   "Applied:"                 outcome applied
- *   "Not applied:"             outcome not_applied, nothing remains applied
- *   "Not applied in full:"     outcome not_applied, some items remain applied (listed)
- *   "Outcome unknown:"         outcome unknown
+ * Renders the first text block: the outcome in plain words, the facts a reader needs first, the
+ * repeat instruction and the read to make. The full shape follows in the second text block.
  */
-export function renderText(r: MwsResult, o: TextOptions): string {
+export function renderText(r: WriteResult, o: TextOptions): string {
   const lines: string[] = [];
-  const partial = r.outcome === "not_applied" && (r.applied?.length ?? 0) > 0;
+  const head = `${HEADLINE[r.outcome]}: ${o.summary}`;
   switch (r.outcome) {
-    case "applied":
-      lines.push(sentence(`Applied: ${o.summary}`));
-      break;
     case "not_applied":
-      lines.push(partial
-        ? sentence(`Not applied in full: ${o.summary}`) + " Some items remain applied; each is listed below."
-        : sentence(`Not applied: ${o.summary}`) + " Nothing was changed.");
+      lines.push(`${sentence(head)} Nothing was changed.`);
+      break;
+    case "partial":
+      lines.push(`${sentence(head)} Some items remain applied; the JSON below gives the outcome of each.`);
       break;
     case "unknown":
-      lines.push(sentence(`Outcome unknown: ${o.summary}`) + " It is not known whether the change was applied.");
+      lines.push(`${sentence(head)} It is not known whether the change was applied.`);
       break;
+    case "accepted":
+      lines.push(`${sentence(head)} The backend has not yet reported the result.`);
+      break;
+    default:
+      lines.push(sentence(head));
   }
-  if (r.object) lines.push(`Object: id ${q(r.object.id)}${r.object.version === undefined ? "" : `, version ${q(r.object.version)}`}.`);
-  if (r.changed) lines.push(`Changed fields: ${r.changed.length ? r.changed.map(q).join(", ") : "none"}.`);
-  if (r.applied) lines.push(`Applied items (${r.applied.length}): ${r.applied.length ? r.applied.map(ref).join(", ") : "none"}.`);
-  if (r.failed) lines.push(`Items not applied (${r.failed.length}): ${r.failed.length ? r.failed.map((f) => `${q(f.id)} (${q(f.reason)})`).join(", ") : "none"}.`);
-  if (r.conflict) {
-    lines.push(`Current version: ${q(r.conflict.current_version)}.`);
-    lines.push(`Current state (JSON): ${JSON.stringify(r.conflict.current_state)}`);
+  if (r.replayed) lines.push("Replay: this call repeats an earlier call with the same idempotency key and the same arguments; it is answered with that call's outcome, and nothing was applied again.");
+  if (r.changed) lines.push(`Changed: ${r.changed.length ? r.changed.map(q).join(", ") : "nothing"}.`);
+  if (r.object?.version !== undefined && r.outcome !== "not_applied") lines.push(`Version now: ${q(r.object.version)}.`);
+  const read = readSentence(r);
+  switch (r.repeat) {
+    case "no":
+      lines.push("Do not send the same call again.");
+      break;
+    case "yes":
+      lines.push("The same call can be sent again unchanged; it cannot apply the write more than once.");
+      break;
+    case "same_key":
+      lines.push(`Send the call again only with the same ${o.keyArgument ?? "idempotency key"}${o.key !== undefined ? ` ${q(o.key)}` : ""}${read ? `, or first ${read}` : ""}.`);
+      break;
+    case "same_version":
+      lines.push(`Send the call again only with the same ${r.version_argument ?? "version"}${o.sentVersion !== undefined ? ` ${q(o.sentVersion)}` : ""}: if the first call was applied, the repeat is refused${read ? `; or first ${read}` : ""}.`);
+      break;
+    case "read_first":
+      lines.push(r.conflict?.current_state && !(r.conflict.omitted?.length)
+        ? `Build the write again from the current state in the JSON below${read ? `, or ${read}` : ""}; do not resend your earlier values with the new version.`
+        : `Before writing again, ${read ?? "read the object"} and build the write from what the read shows.`);
+      break;
+    default:
+      if (read) lines.push(`To see the current state, ${read}.`);
   }
-  if (r.settle_with) {
-    lines.push(r.outcome === "unknown"
-      ? `Settle it with ${q(r.settle_with)}: read the object before sending this write again.`
-      : `Read it with ${q(r.settle_with)}.`);
-  }
-  lines.push(`Safe to repeat: ${r.safe_to_repeat ? "yes" : "no"}.`);
   for (const n of o.notes ?? []) lines.push(sentence(n));
   return lines.join("\n");
 }
 
-/** Checks the invariants of the shape. Throws a TypeError naming the first one broken. */
-export function assertShape(r: MwsResult): void {
-  const fail = (m: string): never => {
-    throw new TypeError(`MWS result shape v0: ${m}`);
-  };
-  if (r.mws !== RESULT_SHAPE) fail(`mws must be ${q(RESULT_SHAPE)}`);
-  if (!["applied", "not_applied", "unknown"].includes(r.outcome)) fail(`outcome ${q(r.outcome)} is not one of "applied", "not_applied", "unknown"`);
-  if (typeof r.safe_to_repeat !== "boolean") fail("safe_to_repeat must be a boolean");
-  if (r.outcome === "unknown" && !r.settle_with) fail("an unknown outcome must name the read tool that settles it (settle_with)");
-  if (r.conflict && r.outcome !== "not_applied") fail("a conflict is a write that was not applied");
-  if (r.outcome === "applied" && r.failed?.length) fail("an applied result has no failed items; use outcome not_applied with applied and failed");
-  if (r.conflict && (r.conflict.current_version === undefined || r.conflict.current_state === undefined)) fail("a conflict carries current_version and current_state");
-}
-
-/** Builds the tool result for a shape: the shape in structuredContent, the mirror in one text block. */
-export function toToolResult(r: MwsResult, o: TextOptions): CallToolResult {
-  assertShape(r);
-  const structured = clean(r);
+/** Builds the tool result: the shape in structuredContent.mws, the sentence and the JSON in two text blocks. */
+export function toToolResult(r: WriteResult, o: TextOptions, own: Record<string, unknown> = {}): CallToolResult {
+  const shape = cleanShape(r);
+  assertShape(shape);
+  if (Object.prototype.hasOwnProperty.call(own, "mws")) throw new TypeError("the tool's own output must not have a member named mws");
+  const structured = { ...own, mws: shape };
   return {
-    content: [{ type: "text", text: renderText(r, o) }],
-    structuredContent: structured as unknown as Record<string, unknown>,
-    ...(r.outcome === "applied" ? {} : { isError: true }),
+    content: [
+      { type: "text", text: renderText(shape, o) },
+      { type: "text", text: JSON.stringify(structured) },
+    ],
+    structuredContent: structured,
+    ...(isErrorFor(shape.outcome) ? { isError: true } : {}),
   };
 }
 
-/** Drops undefined fields, so that a field not relevant to a result is omitted, not null. */
-function clean(r: MwsResult): MwsResult {
-  return Object.fromEntries(Object.entries(r).filter(([, v]) => v !== undefined)) as unknown as MwsResult;
+function cleanShape(r: WriteResult): WriteResult {
+  const out = clean({ ...r });
+  if (out.object) out.object = clean(out.object);
+  if (out.conflict) out.conflict = clean(out.conflict);
+  if (out.items) out.items = out.items.map((i) => clean(i));
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reader (B-9 reader rules)
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const isStr = (v: unknown): v is string => typeof v === "string";
+const isPtr = (v: unknown): v is string => isStr(v) && (v === "" || v.startsWith("/"));
+
+/**
+ * Reads the shape from a result. Follows B-9's reader rules: a result of another MAJOR version is
+ * read as if it carried no shape (undefined); members it does not know, and members whose value
+ * does not have the form 0.1 gives them, are dropped. Returns undefined where there is no shape or
+ * `outcome` is not well formed.
+ */
+export function readResult(result: CallToolResult | { structuredContent?: unknown }): WriteResult | undefined {
+  const sc = result.structuredContent;
+  if (!isObj(sc) || !isObj(sc["mws"])) return undefined;
+  const m = sc["mws"];
+  const shape = m["shape"];
+  if (!isStr(shape)) return undefined;
+  const mm = /^write-result\/(\d+)\.(\d+)$/.exec(shape);
+  if (!mm || mm[1] !== "0") return undefined;
+  if (!OUTCOMES.includes(m["outcome"] as Outcome)) return undefined;
+  const out: Record<string, unknown> = { shape, outcome: m["outcome"] };
+  if (REPEATS.includes(m["repeat"] as Repeat)) out["repeat"] = m["repeat"];
+  if (isStr(m["operation"])) out["operation"] = m["operation"];
+  if (isObj(m["object"])) {
+    const ob = Object.fromEntries(["type", "id", "version", "scope"].filter((k) => isStr((m["object"] as Record<string, unknown>)[k])).map((k) => [k, (m["object"] as Record<string, unknown>)[k]]));
+    out["object"] = ob;
+  }
+  if (Array.isArray(m["changed"]) && m["changed"].every(isPtr)) out["changed"] = m["changed"];
+  if (m["replayed"] === true) out["replayed"] = true;
+  if (Array.isArray(m["items"])) {
+    out["items"] = (m["items"] as unknown[]).filter((i): i is Record<string, unknown> => isObj(i) && Number.isInteger(i["index"]) && ITEM_OUTCOMES.includes(i["outcome"] as ItemOutcome))
+      .map((i) => clean({ index: i["index"], step: isStr(i["step"]) ? i["step"] : undefined, id: isStr(i["id"]) ? i["id"] : undefined, version: isStr(i["version"]) ? i["version"] : undefined, outcome: i["outcome"], code: isStr(i["code"]) && CODE.test(i["code"]) ? i["code"] : undefined, message: isStr(i["message"]) ? i["message"] : undefined }));
+  }
+  if (Number.isInteger(m["applied_count"]) && (m["applied_count"] as number) >= 0) out["applied_count"] = m["applied_count"];
+  if (isStr(m["code"]) && CODE.test(m["code"])) out["code"] = m["code"];
+  if (isStr(m["message"])) out["message"] = m["message"];
+  if (isPtr(m["argument"])) out["argument"] = m["argument"];
+  if (isObj(m["conflict"])) {
+    const c = m["conflict"];
+    out["conflict"] = clean({
+      current_version: isStr(c["current_version"]) ? c["current_version"] : undefined,
+      version_source: c["version_source"] === "backend" || c["version_source"] === "server" ? c["version_source"] : undefined,
+      current_state: isObj(c["current_state"]) ? c["current_state"] : undefined,
+      omitted: Array.isArray(c["omitted"]) && c["omitted"].every(isPtr) ? c["omitted"] : undefined,
+      held_by: isStr(c["held_by"]) ? c["held_by"] : undefined,
+    });
+  }
+  if (isObj(m["read_with"]) && isStr(m["read_with"]["tool"]) && isObj(m["read_with"]["arguments"])) out["read_with"] = { tool: m["read_with"]["tool"], arguments: m["read_with"]["arguments"] };
+  if (isStr(m["version_argument"])) out["version_argument"] = m["version_argument"];
+  return out as unknown as WriteResult;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Builders
 
-export interface AppliedOptions extends TextOptions {
-  /** The object written, with its new version where the resource has one (MWS-RES-3, RES-4). */
-  object?: ObjectRef;
-  /** The fields the call changed; an empty list says the call changed nothing (MWS-RES-1 guidance). */
-  changed?: string[];
-  /** For a write of several objects: each object applied. */
-  applied?: ObjectRef[];
-  /** See MwsResult.safe_to_repeat. Default false, the cautious value. */
-  safeToRepeat?: boolean;
-  /** A read tool that shows the result. */
-  settleWith?: string;
+interface Common extends TextOptions {
+  /** The kind of write: "create", "update", "delete", or the name of a command. */
+  operation?: string;
+  /** The object written. Numbers are converted to strings. */
+  object?: { type?: string; id?: Scalar; version?: Scalar; scope?: Scalar };
+  /** A read that shows the object's current state. */
+  readWith?: ReadWith;
+  /** The tool's own output, put beside `mws` in structuredContent. */
+  own?: Record<string, unknown>;
 }
 
-/** A success receipt: the write is in effect (MWS-RES-1, RES-4). */
+export interface AppliedOptions extends Common {
+  /** The fields the write changed, as JSON Pointers or top-level field names; [] says nothing changed. Leave out for a delete. */
+  changed?: string[];
+  /** Default "no". "yes" only where a repeat cannot apply the write twice and cannot undo another writer's change. */
+  repeat?: Repeat;
+  /** True for the answer to a repeat with the same idempotency key. */
+  replayed?: boolean;
+  /** For a write of several items: each item (all applied). */
+  items?: Item[];
+  /** For a write by selector: how many objects it was applied to. */
+  appliedCount?: number;
+  versionArgument?: string;
+}
+
+/** A receipt: the state the caller asked for is in effect (MWS-RES-1, RES-3, RES-4). */
 export function applied(o: AppliedOptions): CallToolResult {
   return toToolResult({
-    mws: RESULT_SHAPE,
+    shape: SHAPE,
     outcome: "applied",
-    safe_to_repeat: o.safeToRepeat ?? false,
-    object: o.object,
-    changed: o.changed,
-    applied: o.applied,
-    settle_with: o.settleWith,
-  }, o);
+    repeat: o.repeat ?? "no",
+    operation: o.operation,
+    object: o.object ? objectRef(o.object) : undefined,
+    changed: o.changed?.map(pointer),
+    replayed: o.replayed ? true : undefined,
+    items: o.items,
+    applied_count: o.appliedCount,
+    read_with: o.readWith,
+    version_argument: o.versionArgument,
+  }, o, o.own);
 }
 
-export interface NotAppliedOptions extends TextOptions {
-  object?: ObjectRef;
-  /** The items that were not applied, with the reason for each (MWS-ATOM-1). */
-  failed?: FailedItem[];
-  /** Default true: nothing was applied, so the same call cannot apply anything twice. */
-  safeToRepeat?: boolean;
-  settleWith?: string;
+export interface NotAppliedOptions extends Common {
+  /** A stable code: one of the fixed codes, or the server's own. */
+  code?: string;
+  /** The reason in words. Default: the summary. */
+  message?: string;
+  /** The argument the reason concerns, as a JSON Pointer into the arguments, or a top-level name. */
+  argument?: string;
+  /** Default "no" (a repeat would meet the same refusal). "yes" where no request that changes state was sent or the refusal may not recur. */
+  repeat?: Repeat;
+  /** For a write of several items that applied none: each item. */
+  items?: Item[];
+  versionArgument?: string;
 }
 
-/**
- * A refusal: nothing was applied (`isError: true`). Use it for a backend refusal, a rule of the
- * tool, a missing object, and an all-or-nothing batch that applied nothing (MWS-RES-2, ATOM-1).
- */
+/** A refusal: no change made by the call is in effect (`isError: true`; MWS-RES-2, CONC-4, IN-4). */
 export function notApplied(o: NotAppliedOptions): CallToolResult {
+  const { version: _v, ...object } = o.object ?? {};
   return toToolResult({
-    mws: RESULT_SHAPE,
+    shape: SHAPE,
     outcome: "not_applied",
-    safe_to_repeat: o.safeToRepeat ?? true,
-    object: o.object,
-    failed: o.failed,
-    settle_with: o.settleWith,
-  }, o);
+    repeat: o.repeat ?? "no",
+    operation: o.operation,
+    object: o.object ? objectRef(object) : undefined,
+    code: o.code,
+    message: o.message ?? sentence(o.summary),
+    argument: o.argument === undefined ? undefined : pointer(o.argument),
+    items: o.items,
+    read_with: o.readWith,
+    version_argument: o.versionArgument,
+  }, o, o.own);
 }
 
-export interface PartialOptions extends TextOptions {
-  /** Every item that remains applied. */
-  applied: ObjectRef[];
-  /** Every item that was not applied, with the reason (including items not attempted). */
-  failed: FailedItem[];
-  /** Default false: repeating the call would apply the items that were applied again. */
-  safeToRepeat?: boolean;
-  settleWith?: string;
+export interface ItemsOptions extends Common {
+  /** Every item or step, with its outcome. */
+  items: Item[];
+  /** For a write by selector: how many objects it was applied to (items then list at least every one it was not). */
+  appliedCount?: number;
+  /** For an outcome that is partial or unknown: "same_key" where the call carried a key, else "read_first" (the default). */
+  repeat?: Repeat;
+  code?: string;
+  message?: string;
 }
 
 /**
- * A multi-item or multi-step write that was not applied in full: never a success (`isError:
- * true`), and it names each item applied and each item not applied (MWS-ATOM-1, RES-2). The shape
- * v0 has no "partial" outcome; such a write is `not_applied` with a non-empty `applied` list.
+ * A write of several items or steps, with the outcome derived from the items as B-9 defines it:
+ * `unknown` where any item is unknown; `applied` where no item failed (also for a selector that
+ * matched nothing); `not_applied` where items failed and none was applied; otherwise `partial`
+ * (MWS-ATOM-1, RES-2).
  */
-export function partial(o: PartialOptions): CallToolResult {
-  if (o.applied.length === 0) return notApplied({ ...o, safeToRepeat: o.safeToRepeat ?? true });
+export function itemsResult(o: ItemsOptions): CallToolResult {
+  const outs = o.items.map((i) => i.outcome);
+  const anyApplied = outs.includes("applied") || (o.appliedCount ?? 0) > 0;
+  const anyFailed = outs.some((x) => x === "not_applied" || x === "not_attempted");
+  const outcome: Outcome = outs.includes("unknown") ? "unknown"
+    : !anyFailed ? "applied"
+    : anyApplied ? "partial" : "not_applied";
+  if (outcome === "applied") return applied({ ...o, repeat: o.repeat ?? "no" });
+  if (outcome === "not_applied") return notApplied({ ...o, repeat: o.repeat ?? "no" });
   return toToolResult({
-    mws: RESULT_SHAPE,
-    outcome: "not_applied",
-    safe_to_repeat: o.safeToRepeat ?? false,
-    applied: o.applied,
-    failed: o.failed,
-    settle_with: o.settleWith,
-  }, o);
+    shape: SHAPE,
+    outcome,
+    repeat: o.repeat ?? "read_first",
+    operation: o.operation,
+    object: o.object ? objectRef(o.object) : undefined,
+    items: o.items,
+    applied_count: o.appliedCount,
+    code: o.code,
+    message: o.message,
+    read_with: o.readWith,
+  }, o, o.own);
+}
+
+export interface AcceptedOptions extends Common {}
+
+/** Accepted for later processing by a backend that completes the operation asynchronously (NF-19). */
+export function accepted(o: AcceptedOptions): CallToolResult {
+  return toToolResult({
+    shape: SHAPE,
+    outcome: "accepted",
+    repeat: "no",
+    operation: o.operation,
+    object: o.object ? objectRef(o.object) : undefined,
+    read_with: o.readWith,
+  }, o, o.own);
 }
 
 export interface ConflictOptions {
   /** The object whose write was refused. */
-  id: Id;
-  /** What kind of object it is, for the sentence ("note"). Default "object". */
-  noun?: string;
-  /** The object's current version, under the name the write tool accepts (`versionArg`). */
-  currentVersion: Version;
-  /** The object's current state, as the read tool returns it (keep it compact). */
-  currentState: Record<string, unknown>;
+  id: Scalar;
+  /** Its kind, for `object.type` and the sentence ("note"). */
+  type?: string;
+  operation?: string;
+  /** "conflict" (a version) or "locked" (a lock or another control). Default "conflict". */
+  code?: "conflict" | "locked";
+  /** The object's version when the write was refused; leave out where the backend has none. */
+  currentVersion?: Scalar;
+  /** "backend" where the version is the backend's own, "server" where the server derives it (B-3). Default "backend". */
+  versionSource?: "backend" | "server";
+  /** The object as the read tool returns it, with only fields the caller may read and no secret. */
+  currentState?: Record<string, unknown>;
+  /** JSON Pointers (or top-level names) of the fields left out of currentState. */
+  omitted?: string[];
+  /** For a lock: who or what holds it, where the caller may be told. */
+  heldBy?: string;
   /** The argument that takes the version. Default "expected_version". */
-  versionArg?: string;
-  /** The read tool that returns the object. */
-  readTool: string;
-  /** Further sentences. */
+  versionArgument?: string;
+  /** The read that shows the current state. */
+  readWith: ReadWith;
   notes?: string[];
+  own?: Record<string, unknown>;
 }
 
 /**
- * A write refused because the object changed since the version the caller read (MWS-CONC-2,
- * CONC-4, CONC-6). It is a tool execution error, says that nothing was applied, carries the current
- * version on its own under the name the write tool accepts and the current state as JSON, and tells
- * the caller to apply its change to that state or read again; never to resend its old values with
- * the new version.
+ * A write refused because the object changed since the state the call carried, or because of a
+ * lock (MWS-CONC-1, CONC-2, CONC-4, CONC-6): `isError: true`, nothing applied, `repeat:
+ * "read_first"`, and the current version on its own beside the current state as JSON.
  */
 export function conflict(o: ConflictOptions): CallToolResult {
-  const noun = o.noun ?? "object";
-  const arg = o.versionArg ?? "expected_version";
+  const code = o.code ?? "conflict";
+  const noun = o.type ?? "object";
+  const summary = code === "locked"
+    ? `${noun} ${q(String(o.id))} is locked${o.heldBy ? ` by ${q(o.heldBy)}` : ""}, so the write was refused`
+    : `${noun} ${q(String(o.id))} changed since the version you read${o.currentVersion !== undefined ? `; it is now at version ${q(o.currentVersion)}` : ""}`;
   return toToolResult({
-    mws: RESULT_SHAPE,
+    shape: SHAPE,
     outcome: "not_applied",
-    safe_to_repeat: true,
-    object: { id: o.id },
-    conflict: { current_version: o.currentVersion, current_state: o.currentState },
-    settle_with: o.readTool,
-  }, {
-    summary: `${noun} ${q(o.id)} changed since the version you read, so the write was refused (conflict)`,
-    notes: [
-      `To write again, send ${arg} ${q(o.currentVersion)} with your change applied to the current state above, or read it again with ${q(o.readTool)} first`,
-      `Do not resend your earlier values with the new ${arg}: that would overwrite the other writer's change`,
-      ...(o.notes ?? []),
-    ],
-  });
-}
-
-/** Reads the shape back from a tool result, or returns undefined where there is none. */
-export function readResult(result: CallToolResult): MwsResult | undefined {
-  const s = result.structuredContent as Partial<MwsResult> | undefined;
-  return s && s.mws === RESULT_SHAPE ? (s as MwsResult) : undefined;
-}
-
-/** The JSON Schema of the shape, for a tool's `outputSchema` or for tests. */
-export const RESULT_SCHEMA = {
-  $schema: "https://json-schema.org/draft/2020-12/schema",
-  title: "MWS result shape v0 (provisional)",
-  type: "object",
-  required: ["mws", "outcome", "safe_to_repeat"],
-  properties: {
-    mws: { const: RESULT_SHAPE },
-    outcome: { enum: ["applied", "not_applied", "unknown"] },
-    safe_to_repeat: { type: "boolean" },
-    object: { $ref: "#/$defs/ref" },
-    changed: { type: "array", items: { type: "string" } },
-    applied: { type: "array", items: { $ref: "#/$defs/ref" } },
-    failed: {
-      type: "array",
-      items: { type: "object", required: ["id", "reason"], properties: { id: { $ref: "#/$defs/id" }, reason: { type: "string" } } },
-    },
+    repeat: "read_first",
+    operation: o.operation,
+    object: objectRef({ type: o.type, id: o.id }),
+    code,
+    message: sentence(summary),
     conflict: {
-      type: "object",
-      required: ["current_version", "current_state"],
-      properties: { current_version: { $ref: "#/$defs/version" }, current_state: { type: "object" } },
+      current_version: str(o.currentVersion),
+      version_source: o.currentVersion !== undefined ? o.versionSource ?? "backend" : undefined,
+      current_state: o.currentState,
+      omitted: o.omitted?.map(pointer),
+      held_by: o.heldBy,
     },
-    settle_with: { type: "string" },
-  },
-  $defs: {
-    id: { type: ["string", "integer"] },
-    version: { type: ["string", "integer"] },
-    ref: { type: "object", required: ["id"], properties: { id: { $ref: "#/$defs/id" }, version: { $ref: "#/$defs/version" } } },
-  },
-} as const;
+    read_with: o.readWith,
+    version_argument: code === "conflict" ? o.versionArgument ?? "expected_version" : o.versionArgument,
+  }, { summary, notes: o.notes }, o.own);
+}

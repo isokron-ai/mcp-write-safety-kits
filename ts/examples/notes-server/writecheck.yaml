@@ -50,22 +50,21 @@ review:
   stale_writes_disclosed: "stale delete is not detected|without a version check"
   rejection_gives_reason: "expected |must |is required|is not an argument"
 
-# Spec 7.3, rule 11: how the kit words what a result says. Every write result opens with a fixed
-# phrase that mirrors the structured outcome field of the MWS result shape v0:
-#   "Applied:"               structuredContent.outcome = "applied"
-#   "Not applied:"           structuredContent.outcome = "not_applied", nothing remains applied
-#   "Not applied in full:"   structuredContent.outcome = "not_applied", with structuredContent.applied listed
-#   "Outcome unknown:"       structuredContent.outcome = "unknown"
-# and a replay carries a line "Replay: ...". These patterns read those phrases; this manifest format
-# has no key that names a structured field for the purpose, so the text mirror is what is declared.
+# Spec 7.3, rule 11: how the server says what a result says. Every write result carries the
+# write-result/0.1 shape (MWS 0.9 draft Annex B-9) in structuredContent.mws, and two text blocks:
+# a sentence that opens with the outcome ("Applied:", "Not applied:", "Partly applied:",
+# "Outcome unknown:", "Accepted:") and the serialized JSON of structuredContent. The manifest format
+# at the tested commit cannot adopt a shape by name and version, so these patterns read the
+# sentence's opening words and the "outcome" member of the JSON block. A replay is read from the
+# structured member mws.replayed (idempotency.replay_marker below).
 patterns:
-  outcome_unknown: '\bOutcome unknown:'
-  applied: '(?<!not )\bapplied:|\bapplied items \([1-9]'
-  not_applied: '\bNot applied( in full)?:'
+  outcome_unknown: '\bOutcome unknown:|"outcome":"unknown"'
+  applied: '(?<!not )\bapplied:|"outcome":"(applied|partial)"'
+  not_applied: '\bNot applied:|\bPartly applied:|"outcome":"(not_applied|partial)"'
   not_used: '\bnot used\b'
-  in_progress: '\bstill in progress\b'
-  replay: '(^|\n)Replay: '
-  repeat_refused: '\balready used with different arguments\b'
+  in_progress: '\bstill in progress\b|"code":"in_progress"'
+  replay: '"replayed":true'
+  repeat_refused: '"code":"idempotency_key_reused"'
   unavailable: '\bservice unavailable\b|\brate limit(ed)?\b'
 
 # Arguments for the tag tools, called on a scratch note by the annotation checks (MWS-ANN-1 to ANN-3, ANN-5).
@@ -76,7 +75,7 @@ calls:
 resources:
   # Notebooks: the containers notes live in. The caller chooses the key (MWS-TGT-3).
   - name: notebook
-    create: { tool: create_notebook, args: { key: "{{key}}", name: "{{marker}}" }, id: object.id, name_path: key }
+    create: { tool: create_notebook, args: { key: "{{key}}", name: "{{marker}}" }, id: mws.object.id, name_path: key }
     read: { tool: list_notebooks, args: {}, items: notebooks, match: key }
     key: { arg: key, vary: { arg: name, path: name } }
     list: { tool: list_notebooks, args: {}, items: notebooks, id: key, name: name }
@@ -92,7 +91,7 @@ resources:
       default: inbox
       list: { tool: list_notes, args: { notebook: "{{scope}}" }, items: notes, id: id, name: title }
     # Every optional field set to a value that is not its default, so that a reset shows (MWS-UPD-1).
-    create: { tool: create_note, args: { notebook: "{{?scope}}", title: "{{marker}}", body: seeded, tags: [a, b, c], status: archived }, id: object.id, name_path: title }
+    create: { tool: create_note, args: { notebook: "{{?scope}}", title: "{{marker}}", body: seeded, tags: [a, b, c], status: archived }, id: mws.object.id, name_path: title }
     read: { tool: get_note, args: { id: "{{id}}" }, ignore: [updated_at, created_at] }
     update:
       tool: update_note
@@ -109,11 +108,11 @@ resources:
     missing_id: n-999999999
     cleanup: delete
     # MWS-RETRY-2: the key is kept by the server (MemoryIdempotencyStore), not by a backend.
-    # The kit's result shape has no replay field; a replay is marked by a line in the text.
+    # A replay is marked by the shape's member mws.replayed.
     idempotency:
       args: { notebook: "{{?scope}}", title: "{{marker}}" }
       key: { arg: idempotency_key }
-      replay_text: '(^|\n)Replay: '
+      replay_marker: mws.replayed
       backend_key: false
       key_record_survives: { graceful: false, kill: false }
     # MWS-TGT-2: delete_notes requires a selector. The forms are sent only after MWS-TGT-1 is held for
@@ -132,7 +131,6 @@ resources:
         args: { notebook: "{{scope}}", ids: "{{ids}}" }
         effect: deleted
         invalid_id: n-999999999
-        report: { applied: applied, id: id }
     creates:
       - name: note
         tool: create_note

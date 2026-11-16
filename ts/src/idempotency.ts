@@ -10,7 +10,7 @@
 //   - two calls with the same key at the same time never both write: the second waits for the
 //     first and then gets its result (or, with `concurrent: "refuse"`, is refused as in progress);
 //   - where the first call's outcome is unknown (its answer from the backend was lost), a repeat
-//     applies nothing and says the outcome is not known, naming the read that settles it.
+//     applies nothing and says the outcome is not known, naming the read that settles it (read_with).
 //
 // A key whose first call applied nothing (a refusal) is released, so that a corrected or later
 // call with the same key is a new attempt.
@@ -22,7 +22,7 @@
 // then sees a repeat applied a second time unless the backend itself deduplicates.
 
 import { createHash, randomUUID } from "node:crypto";
-import { q, readResult, toToolResult, notApplied, type MwsResult } from "./result.js";
+import { q, readResult, toToolResult, notApplied, type ReadWith, type WriteResult } from "./result.js";
 import { classifyError, unknownOutcome } from "./outcome.js";
 import type { CallToolResult } from "./types.js";
 
@@ -166,8 +166,8 @@ export interface IdempotencyOptions {
   args: Record<string, unknown>;
   /** The argument that carries the key. Default "idempotency_key". */
   keyArg?: string;
-  /** The read tool that shows whether a write took effect, for unknown outcomes. */
-  settleWith: string;
+  /** The read that shows whether a write took effect, for unknown outcomes and calls still in progress. */
+  readWith: ReadWith;
   /** What a second concurrent call with the same key does: wait for the first (default) or be refused. */
   concurrent?: "wait" | "refuse";
   /** The fingerprint of the arguments. Default: a hash of `args` without the key (fingerprintOf). */
@@ -184,7 +184,7 @@ export async function withIdempotency(o: IdempotencyOptions, write: () => Promis
   const key = o.args[keyArg];
   if (key === undefined) return write();
   if (typeof key !== "string" || key.length === 0) {
-    return notApplied({ summary: `argument ${q(keyArg)} was refused: expected a non-empty string, got ${q(key)}` });
+    return notApplied({ summary: `argument ${q(keyArg)} was refused: expected a non-empty string, got ${q(key)}`, code: "invalid_argument", argument: keyArg });
   }
   const fp = o.fingerprint ?? fingerprintOf(o.args, keyArg);
   for (;;) {
@@ -195,13 +195,14 @@ export async function withIdempotency(o: IdempotencyOptions, write: () => Promis
       case "mismatch":
         return notApplied({
           summary: `${keyArg} ${q(key)} was already used with different arguments, so this call was refused`,
+          code: "idempotency_key_reused",
+          argument: keyArg,
           notes: [`A key identifies one intended write. For a different write, send a different ${keyArg}`],
         });
       case "unknown":
         return unknownOutcome({
           summary: `the earlier call with ${keyArg} ${q(key)} was sent and its answer was lost; this call applied nothing`,
-          settleWith: o.settleWith,
-          guard: { idempotencyKey: { arg: keyArg, value: key } },
+          readWith: o.readWith,
         });
       case "in_progress":
         if ((o.concurrent ?? "wait") === "wait" && b.wait) {
@@ -210,8 +211,9 @@ export async function withIdempotency(o: IdempotencyOptions, write: () => Promis
         }
         return notApplied({
           summary: `an earlier call with ${keyArg} ${q(key)} is still in progress; this call applied nothing`,
-          settleWith: o.settleWith,
-          notes: [`Read with ${q(o.settleWith)} once the earlier call has answered`],
+          code: "in_progress",
+          repeat: "same_key",
+          readWith: o.readWith,
         });
       case "new": {
         let result: CallToolResult;
@@ -219,42 +221,43 @@ export async function withIdempotency(o: IdempotencyOptions, write: () => Promis
           result = await write();
         } catch (e) {
           // A refusal, or a request that was never sent, applied nothing: the key is free again.
-          if (classifyError(e) === "not_applied") await o.store.release(o.scope, key, b.token);
+          if (classifyError(e) !== "unknown") await o.store.release(o.scope, key, b.token);
           else await o.store.markUnknown(o.scope, key, b.token);
           throw e;
         }
         const shape = readResult(result);
         const outcome = shape?.outcome ?? (result.isError ? "not_applied" : "applied");
-        if (outcome === "applied") await o.store.complete(o.scope, key, b.token, result);
-        else if (outcome === "unknown") await o.store.markUnknown(o.scope, key, b.token);
-        else if (shape?.applied?.length) await o.store.complete(o.scope, key, b.token, result); // partly applied: replay it
-        else await o.store.release(o.scope, key, b.token);
+        // applied, accepted and partial are kept and replayed; unknown keeps the key with no result; not_applied frees it.
+        if (outcome === "unknown") await o.store.markUnknown(o.scope, key, b.token);
+        else if (outcome === "not_applied") await o.store.release(o.scope, key, b.token);
+        else await o.store.complete(o.scope, key, b.token, result);
         return result;
       }
     }
   }
 }
 
-/** The `_meta` key that marks a replayed result. Not part of shape v0, which has no replay field. */
+/** The `_meta` key that also marks a replayed result (the shape's own marker is `mws.replayed`). */
 export const REPLAY_META_KEY = "mws/replay";
 
 /**
- * The first call's result, marked as a replay: the same object, version and outcome, with an empty
- * list of changed fields (this call changed nothing), a sentence that starts "Replay:", and
- * `_meta["mws/replay"]: true`.
+ * The first call's result, answered again for a repeat: the same structured content and outcome,
+ * with `mws.replayed: true`, a "Replay:" sentence, and `_meta["mws/replay"]: true`. `changed` is
+ * kept as the first call gave it: it describes the write whose outcome is being reported.
  */
 export function replayOf(first: CallToolResult, keyArg: string, key: string): CallToolResult {
   const shape = readResult(first);
-  const firstText = first.content.find((c) => c.type === "text") as { text?: string } | undefined;
-  const firstLine = (firstText?.text ?? "").split("\n")[0] ?? "";
-  const what = firstLine.replace(/^(Applied|Not applied in full|Not applied|Outcome unknown):\s*/, "").replace(/\.$/, "");
-  const replaySentence = `Replay: an earlier call with ${keyArg} ${q(key)} and the same arguments was answered with this result; this call applied nothing new`;
   const meta = { ...(first._meta ?? {}), [REPLAY_META_KEY]: true };
+  const firstText = first.content.find((c) => c.type === "text") as { text?: string } | undefined;
+  const note = `This answers a repeat with ${keyArg} ${q(key)}`;
   if (!shape) {
-    return { ...first, content: [{ type: "text", text: `${replaySentence}.\n${firstText?.text ?? ""}` }], _meta: meta };
+    return { ...first, content: [{ type: "text", text: `Replay: an earlier call with ${keyArg} ${q(key)} and the same arguments was answered with this result; nothing was applied again.\n${firstText?.text ?? ""}` }], _meta: meta };
   }
-  const replayed: MwsResult = { ...shape, ...(shape.changed ? { changed: [] } : {}) };
-  return { ...toToolResult(replayed, { summary: what || "the earlier call's write", notes: [replaySentence] }), _meta: meta };
+  const firstLine = (firstText?.text ?? "").split("\n")[0] ?? "";
+  const what = firstLine.replace(/^(Applied|Not applied|Partly applied|Outcome unknown|Accepted):\s*/, "").replace(/\.$/, "");
+  const { mws: _m, ...own } = first.structuredContent as Record<string, unknown>;
+  const replayed: WriteResult = { ...shape, replayed: true };
+  return { ...toToolResult(replayed, { summary: what || "the earlier call's write", notes: [note] }, own), _meta: meta };
 }
 
 export interface KeyPropertyOptions {

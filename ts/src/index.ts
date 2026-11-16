@@ -4,11 +4,13 @@
 export type { CallToolResult, TextContent, Tool, ToolAnnotations, MaybePromise } from "./types.js";
 
 export {
-  RESULT_SHAPE, RESULT_SCHEMA, q, renderText, assertShape, toToolResult, readResult,
-  applied, notApplied, partial, conflict,
-  type Outcome, type Id, type Version, type ObjectRef, type FailedItem, type ConflictInfo, type MwsResult, type TextOptions,
-  type AppliedOptions, type NotAppliedOptions, type PartialOptions, type ConflictOptions,
+  SHAPE, SHAPE_NAME, SHAPE_VERSION, q, pointer, pointerOf, objectRef, isErrorFor, renderText, assertShape, toToolResult, readResult,
+  applied, notApplied, itemsResult, accepted, conflict,
+  type Outcome, type Repeat, type ItemOutcome, type FixedCode, type Scalar, type ObjectRef, type Item, type Conflict, type ReadWith,
+  type WriteResult, type TextOptions, type AppliedOptions, type NotAppliedOptions, type ItemsOptions, type AcceptedOptions, type ConflictOptions,
 } from "./result.js";
+
+export { WRITE_RESULT_SCHEMA, outputSchemaFor, type OwnOutput } from "./schema.js";
 
 export {
   unknownOutcome, guardWrite, classifyError, NotAppliedError, OutcomeUnknownError,
@@ -28,7 +30,7 @@ export {
 export {
   strictInput, withStrictInput, validateArguments, inputError, describeIssue, closeSchema, assertSupportedSchema, jsonEqual,
   SchemaError, SUPPORTED_KEYWORDS,
-  type JsonSchema, type JsonType, type InputIssue, type Validation, type StrictInput,
+  type JsonSchema, type JsonType, type InputIssue, type Validation, type StrictInput, type InputErrorOptions,
 } from "./strict-input.js";
 
 export {

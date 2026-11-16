@@ -1,87 +1,135 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applied, notApplied, partial, conflict, readResult, assertShape, RESULT_SHAPE, q, toToolResult, type MwsResult } from "../src/index.js";
+import { readFileSync } from "node:fs";
+import { applied, notApplied, itemsResult, accepted, conflict, readResult, assertShape, toToolResult, pointer, pointerOf, isErrorFor, q, SHAPE, WRITE_RESULT_SCHEMA, outputSchemaFor, type WriteResult } from "../src/index.js";
 
-const text = (r: { content: Array<{ type: string; text?: unknown }> }) => String(r.content[0]!.text);
+const text = (r: { content: Array<{ type: string; text?: unknown }> }, i = 0) => String(r.content[i]!.text);
+const mws = (r: { structuredContent?: Record<string, unknown> }) => r.structuredContent!["mws"] as Record<string, unknown>;
 
-test("applied: receipt in structuredContent, mirrored in text, no isError", () => {
-  const r = applied({ summary: `updated note ${q("n-1")}`, object: { id: "n-1", version: 4 }, changed: ["title", "tags"], settleWith: "get_note" });
+test("applied: the shape under structuredContent.mws, a sentence, then the JSON", () => {
+  const r = applied({ summary: `updated note ${q("n-1")}`, operation: "update", object: { type: "note", id: "n-1", version: 4 }, changed: ["title", "/tags"], readWith: { tool: "get_note", arguments: { id: "n-1" } } });
   assert.equal(r.isError, undefined);
-  assert.deepEqual(r.structuredContent, { mws: RESULT_SHAPE, outcome: "applied", safe_to_repeat: false, object: { id: "n-1", version: 4 }, changed: ["title", "tags"], settle_with: "get_note" });
-  const t = text(r);
-  assert.match(t, /^Applied: updated note "n-1"\./);
-  assert.match(t, /Object: id "n-1", version 4\./);
-  assert.match(t, /Changed fields: "title", "tags"\./);
-  assert.match(t, /Read it with "get_note"\./);
-  assert.match(t, /Safe to repeat: no\./);
+  assert.deepEqual(mws(r), {
+    shape: "write-result/0.1", outcome: "applied", repeat: "no", operation: "update",
+    object: { type: "note", id: "n-1", version: "4" }, changed: ["/title", "/tags"], read_with: { tool: "get_note", arguments: { id: "n-1" } },
+  });
+  assert.equal(r.content.length, 2);
+  assert.match(text(r), /^Applied: updated note "n-1"\./);
+  assert.match(text(r), /Changed: "\/title", "\/tags"\./);
+  assert.match(text(r), /Version now: "4"\./);
+  assert.match(text(r), /Do not send the same call again\./);
+  assert.deepEqual(JSON.parse(text(r, 1)), r.structuredContent);
 });
 
-test("applied with no change says so (empty changed list)", () => {
-  const r = applied({ summary: "nothing to change", object: { id: 7 }, changed: [] });
-  assert.deepEqual(readResult(r)!.changed, []);
-  assert.match(text(r), /Changed fields: none\./);
+test("applied with changed: [] says nothing changed; a delete leaves changed out", () => {
+  assert.deepEqual(mws(applied({ summary: "x", changed: [] }))["changed"], []);
+  assert.match(text(applied({ summary: "x", changed: [] })), /Changed: nothing\./);
+  assert.equal(mws(applied({ summary: "deleted", operation: "delete" }))["changed"], undefined);
 });
 
-test("fields that are not relevant are omitted, not null", () => {
-  const r = notApplied({ summary: "note \"n-9\" was not found" });
-  assert.deepEqual(Object.keys(r.structuredContent!).sort(), ["mws", "outcome", "safe_to_repeat"]);
+test("the tool's own output sits beside mws", () => {
+  const r = applied({ summary: "x", own: { note: { id: "n-1" } } });
+  assert.deepEqual(Object.keys(r.structuredContent!).sort(), ["mws", "note"]);
+  assert.throws(() => applied({ summary: "x", own: { mws: 1 } }), /mws/);
+});
+
+test("notApplied: isError, code, message, argument as a pointer, no object version", () => {
+  const r = notApplied({ summary: `notebook ${q("x")} was not found`, code: "not_found", object: { type: "notebook", id: "x", version: 3 } });
   assert.equal(r.isError, true);
-  assert.match(text(r), /^Not applied: note "n-9" was not found\. Nothing was changed\./);
-  assert.match(text(r), /Safe to repeat: yes\./);
+  assert.deepEqual(mws(r), { shape: SHAPE, outcome: "not_applied", repeat: "no", object: { type: "notebook", id: "x" }, code: "not_found", message: `notebook "x" was not found.` });
+  assert.match(text(r), /^Not applied: notebook "x" was not found\. Nothing was changed\./);
+  assert.equal(mws(notApplied({ summary: "s", argument: "title" }))["argument"], "/title");
 });
 
-test("partial: not a success, names every applied and failed item", () => {
-  const r = partial({ summary: "deleted 2 of 3 notes", applied: [{ id: "n-1", version: 2 }, { id: "n-2", version: 1 }], failed: [{ id: "n-3", reason: "locked" }] });
+test("itemsResult derives the outcome from the items", () => {
+  const it = (outcome: "applied" | "not_applied" | "not_attempted" | "unknown", i: number) => ({ index: i, id: `n-${i}`, outcome });
+  assert.equal(mws(itemsResult({ summary: "s", items: [it("applied", 0), it("applied", 1)] }))["outcome"], "applied");
+  const p = itemsResult({ summary: "deleted 1 of 2", items: [it("applied", 0), { ...it("not_applied", 1), code: "not_found", message: "no such note" }] });
+  assert.equal(p.isError, true);
+  assert.equal(mws(p)["outcome"], "partial");
+  assert.equal(mws(p)["repeat"], "read_first");
+  assert.match(text(p), /^Partly applied: deleted 1 of 2\./);
+  assert.equal(mws(itemsResult({ summary: "s", items: [it("not_applied", 0), it("not_attempted", 1)] }))["outcome"], "not_applied");
+  assert.equal(mws(itemsResult({ summary: "s", items: [it("applied", 0), it("unknown", 1)] }))["outcome"], "unknown", "unknown wins over partial");
+  assert.equal(mws(itemsResult({ summary: "s", items: [], appliedCount: 3 }))["applied_count"], 3);
+  assert.equal(mws(itemsResult({ summary: "matched nothing", items: [], appliedCount: 0 }))["outcome"], "applied");
+});
+
+test("accepted: not an error, repeat no", () => {
+  const r = accepted({ summary: "the export was queued", readWith: { tool: "get_export", arguments: { id: "e1" } } });
+  assert.equal(r.isError, undefined);
+  assert.equal(mws(r)["outcome"], "accepted");
+  assert.match(text(r), /^Accepted: the export was queued\. The backend has not yet reported the result\./);
+});
+
+test("conflict: code, read_first, version on its own as a string, state as JSON, version_argument", () => {
+  const r = conflict({ id: "n-3", type: "note", currentVersion: 3, currentState: { title: "Docs", tags: ["content", "v3"] }, omitted: ["body"], readWith: { tool: "get_note", arguments: { id: "n-3" } } });
   assert.equal(r.isError, true);
-  const s = readResult(r)!;
-  assert.equal(s.outcome, "not_applied");
-  assert.equal(s.safe_to_repeat, false);
-  const t = text(r);
-  assert.match(t, /^Not applied in full: deleted 2 of 3 notes\. Some items remain applied/);
-  assert.match(t, /Applied items \(2\): "n-1" \(version 2\), "n-2" \(version 1\)\./);
-  assert.match(t, /Items not applied \(1\): "n-3" \("locked"\)\./);
-  assert.doesNotMatch(t, /Nothing was changed/);
+  assert.deepEqual(mws(r), {
+    shape: SHAPE, outcome: "not_applied", repeat: "read_first", object: { type: "note", id: "n-3" }, code: "conflict",
+    message: `note "n-3" changed since the version you read; it is now at version 3.`,
+    conflict: { current_version: "3", version_source: "backend", current_state: { title: "Docs", tags: ["content", "v3"] }, omitted: ["/body"] },
+    read_with: { tool: "get_note", arguments: { id: "n-3" } }, version_argument: "expected_version",
+  });
+  assert.match(text(r), /^Not applied: note "n-3" changed since the version you read; it is now at version 3\. Nothing was changed\./);
+  assert.match(text(r), /Before writing again, read it with "get_note"/, "with fields omitted, the text asks for a read");
+  const full = conflict({ id: 1, currentVersion: "e1", currentState: { a: 1 }, readWith: { tool: "get", arguments: { id: 1 } } });
+  assert.match(text(full), /Build the write again from the current state in the JSON below.*do not resend your earlier values/);
 });
 
-test("partial with nothing applied is a plain refusal that names every item", () => {
-  const r = partial({ summary: "the batch was refused", applied: [], failed: [{ id: "a", reason: "not found" }, { id: "b", reason: "not attempted" }] });
-  const t = text(r);
-  assert.match(t, /^Not applied: the batch was refused\. Nothing was changed\./);
-  assert.match(t, /"a" \("not found"\), "b" \("not attempted"\)/);
+test("conflict without a version leaves current_version out (never null); a lock carries held_by", () => {
+  const r = conflict({ id: "d", code: "locked", heldBy: "user ann", readWith: { tool: "get", arguments: {} } });
+  const c = mws(r)["conflict"] as Record<string, unknown>;
+  assert.equal("current_version" in c, false);
+  assert.equal("version_source" in c, false);
+  assert.equal(c["held_by"], "user ann");
+  assert.equal(mws(r)["code"], "locked");
 });
 
-test("conflict: error, nothing applied, version on its own, state as JSON, no resend advice", () => {
-  const r = conflict({ id: "n-3", noun: "note", currentVersion: 3, currentState: { title: "Docs", tags: ["content", "v3"] }, readTool: "get_note" });
-  assert.equal(r.isError, true);
-  const s = readResult(r)!;
-  assert.deepEqual(s.conflict, { current_version: 3, current_state: { title: "Docs", tags: ["content", "v3"] } });
-  assert.equal(s.outcome, "not_applied");
-  assert.equal(s.settle_with, "get_note");
-  const t = text(r);
-  assert.match(t, /^Not applied: note "n-3" changed since the version you read/);
-  assert.match(t, /Nothing was changed\./);
-  assert.match(t, /^Current version: 3\.$/m);
-  assert.match(t, /^Current state \(JSON\): \{"title":"Docs","tags":\["content","v3"\]\}$/m);
-  assert.match(t, /read it again with "get_note"/);
-  assert.match(t, /Do not resend your earlier values with the new expected_version/);
+test("assertShape enforces B-9's rules", () => {
+  const base: WriteResult = { shape: SHAPE, outcome: "unknown" };
+  assert.throws(() => assertShape({ ...base, repeat: "yes" }), /repeat "yes"/);
+  assert.throws(() => assertShape({ ...base, outcome: "partial", repeat: "yes" }), /repeat "yes"/);
+  assert.throws(() => assertShape({ ...base, outcome: "not_applied", object: { version: "1" } }), /object.version/);
+  assert.throws(() => assertShape({ ...base, outcome: "not_applied", code: "conflict", conflict: { current_version: "2" }, repeat: "no" }), /current_version needs/);
+  assert.throws(() => assertShape({ ...base, conflict: {} }), /conflict is present only/);
+  assert.throws(() => assertShape({ ...base, code: "Bad-Code" }), /lowercase/);
+  assert.throws(() => assertShape({ ...base, changed: ["title"] }), /JSON Pointer/);
+  assert.throws(() => assertShape({ ...base, items: [{ index: -1, outcome: "applied" }] }), /index/);
+  assert.throws(() => toToolResult({ ...base, shape: "result/v0" as never }, { summary: "x" }), /shape/);
 });
 
-test("conflict uses the write tool's version argument name", () => {
-  const t = text(conflict({ id: 1, currentVersion: "W/\"abc\"", currentState: {}, readTool: "get", versionArg: "if_match" }));
-  assert.match(t, /send if_match "W\/\\"abc\\"" with your change/);
+test("isError follows the outcome", () => {
+  assert.deepEqual((["applied", "not_applied", "partial", "unknown", "accepted"] as const).map(isErrorFor), [false, true, true, true, false]);
 });
 
-test("assertShape refuses broken invariants", () => {
-  const base: MwsResult = { mws: RESULT_SHAPE, outcome: "unknown", safe_to_repeat: false };
-  assert.throws(() => assertShape(base), /settle_with/);
-  assert.throws(() => assertShape({ ...base, outcome: "applied", failed: [{ id: 1, reason: "x" }] }), /failed/);
-  assert.throws(() => assertShape({ ...base, outcome: "applied", conflict: { current_version: 1, current_state: {} } }), /conflict/);
-  assert.throws(() => assertShape({ ...base, outcome: "maybe" as never, settle_with: "x" }), /outcome/);
-  assert.throws(() => toToolResult({ ...base, mws: "result/v1" as never, settle_with: "x" }, { summary: "x" }), /mws/);
+test("pointers escape ~ and /", () => {
+  assert.equal(pointer("a/b~c"), "/a~1b~0c");
+  assert.equal(pointer("/already"), "/already");
+  assert.equal(pointerOf(["tags", 2]), "/tags/2");
 });
 
-test("every structured value appears in the text (mirror)", () => {
-  const r = partial({ summary: "s", applied: [{ id: "id-applied", version: "ver-77" }], failed: [{ id: "id-failed", reason: "reason-x" }], settleWith: "read_tool_x" });
-  const t = text(r);
-  for (const v of ["id-applied", "ver-77", "id-failed", "reason-x", "read_tool_x"]) assert.ok(t.includes(JSON.stringify(v)), v);
+test("readResult follows the reader rules", () => {
+  const ok = applied({ summary: "x", object: { id: 1 } });
+  assert.equal(readResult(ok)!.outcome, "applied");
+  assert.equal(readResult({ structuredContent: { mws: { shape: "write-result/1.0", outcome: "applied" } } }), undefined, "another MAJOR decides nothing");
+  assert.equal(readResult({ structuredContent: { mws: { shape: "write-result/0.1", outcome: "done" } } }), undefined);
+  assert.equal(readResult({ structuredContent: { mws: "result/v0" } }), undefined);
+  const r = readResult({ structuredContent: { mws: { shape: "write-result/0.7", outcome: "unknown", repeat: "maybe", future: 1, changed: "title", code: "no_answer", read_with: { tool: "get", arguments: {} } } } })!;
+  assert.deepEqual(r, { shape: "write-result/0.7", outcome: "unknown", code: "no_answer", read_with: { tool: "get", arguments: {} } }, "unknown and malformed members are dropped");
+});
+
+test("the shipped JSON Schema file equals the exported schema", () => {
+  const file = JSON.parse(readFileSync(new URL("../../schema/write-result-0.1.schema.json", import.meta.url), "utf8"));
+  assert.deepEqual(file, JSON.parse(JSON.stringify(WRITE_RESULT_SCHEMA)));
+});
+
+test("outputSchemaFor: mws required and inlined; own members required only when applied", () => {
+  const s = outputSchemaFor({ properties: { note: { type: "object" } }, required: ["note"] }) as Record<string, any>;
+  assert.deepEqual(s["required"], ["mws"]);
+  assert.equal(s["properties"]["mws"]["$ref"], "#/$defs/write_result");
+  assert.equal(s["$defs"]["write_result"]["properties"]["outcome"]["enum"].length, 5);
+  assert.deepEqual(s["if"], { properties: { mws: { properties: { outcome: { const: "applied" } } } } });
+  assert.deepEqual(s["then"], { required: ["note"] });
+  assert.equal("if" in outputSchemaFor(), false);
 });

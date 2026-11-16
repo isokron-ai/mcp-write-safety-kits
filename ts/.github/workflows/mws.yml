@@ -26,7 +26,7 @@ env:
   MANIFEST: examples/notes-server/writecheck.yaml
   # mcp-writecheck at the commit the example was tested against (0.1.0-dev.0, MWS 0.9).
   CLI_REF: 0295ed6494d99ce5467f0d6e94e91a5c436a18c2
-  PLAN_HASH: 61ea10218337fa85
+  PLAN_HASH: d4a0fabba2bb19b3
 
 jobs:
   plan:

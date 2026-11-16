@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MWS write-result 0.1 (draft, Annex B-9)",
+  "description": "The value of structuredContent.mws. Readers ignore members they do not know.",
+  "type": "object",
+  "required": [
+    "shape",
+    "outcome"
+  ],
+  "properties": {
+    "shape": {
+      "type": "string",
+      "pattern": "^write-result/0\\.[0-9]+$"
+    },
+    "outcome": {
+      "enum": [
+        "applied",
+        "not_applied",
+        "partial",
+        "unknown",
+        "accepted"
+      ]
+    },
+    "repeat": {
+      "enum": [
+        "no",
+        "yes",
+        "same_key",
+        "same_version",
+        "read_first"
+      ]
+    },
+    "operation": {
+      "type": "string"
+    },
+    "object": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        }
+      }
+    },
+    "changed": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(/.*)?$"
+      }
+    },
+    "replayed": {
+      "const": true
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "index",
+          "outcome"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "step": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "applied",
+              "not_applied",
+              "not_attempted",
+              "unknown"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+$"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "applied_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "message": {
+      "type": "string"
+    },
+    "argument": {
+      "type": "string",
+      "pattern": "^(/.*)?$"
+    },
+    "conflict": {
+      "type": "object",
+      "properties": {
+        "current_version": {
+          "type": "string"
+        },
+        "version_source": {
+          "enum": [
+            "backend",
+            "server"
+          ]
+        },
+        "current_state": {
+          "type": "object"
+        },
+        "omitted": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(/.*)?$"
+          }
+        },
+        "held_by": {
+          "type": "string"
+        }
+      }
+    },
+    "read_with": {
+      "type": "object",
+      "required": [
+        "tool",
+        "arguments"
+      ],
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "object"
+        }
+      }
+    },
+    "version_argument": {
+      "type": "string"
+    }
+  }
+}
