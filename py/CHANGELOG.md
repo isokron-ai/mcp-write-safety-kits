@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (16 Nov 2026)
 
 First version, for the MWS 0.9 comment window.
 

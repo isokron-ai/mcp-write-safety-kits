@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/isokron-ai/mcp-write-safety-kits/main/assets/mws-mark-128.png" alt="MCP Write-Safety Requirements mark" width="72" height="72">
+
 # @mcp-write-safety/kit
 
 Small TypeScript helpers for the write tools of an MCP server. They cover the parts of the MCP Write-Safety Requirements (MWS 0.9) that are easy to get wrong by hand: version checks, idempotency keys, strict input validation, truthful results, unknown outcomes and explicit annotations.
@@ -6,7 +8,8 @@ Using the kit helps a server meet MWS. It does not make a server conformant, and
 
 - No runtime dependency. The kit does not import an MCP SDK: its own structural types fit the results of the 1.x SDK (`@modelcontextprotocol/sdk`, declared as an optional peer dependency) and of the 2.x SDK packages.
 - Node 20 or later, ES modules.
-- Apache-2.0. Not published yet; build it from this repository.
+- Apache-2.0 (the schema file: CC BY 4.0). Install: `npm install @mcp-write-safety/kit`.
+- The requirements: [MCP Write-Safety Requirements 0.9](https://isokron.ai/mws). Source: [isokron-ai/mcp-write-safety-kits](https://github.com/isokron-ai/mcp-write-safety-kits/tree/main/ts).
 
 ## Contents
 
@@ -279,7 +282,7 @@ The table points from a `violated` record of `mcp-writecheck` (or its GitHub Act
 
 ## Example and CI
 
-`examples/notes-server` is a small MCP server over an in-memory store (notebooks and notes, a list field, a bulk delete), built only with the kit and the 1.x SDK. Its `writecheck.yaml` is the manifest for `mcp-writecheck`, and its README records the results of a run.
+[`examples/notes-server`](https://github.com/isokron-ai/mcp-write-safety-kits/tree/main/ts/examples/notes-server) is a small MCP server over an in-memory store (notebooks and notes, a list field, a bulk delete), built only with the kit and the 1.x SDK. Its `writecheck.yaml` is the manifest for `mcp-writecheck`, and its README records the results of a run.
 
 The repository's CI (`.github/workflows/ts.yml` at the root) runs the kit's and the example's tests on Node 20, 22 and 24 on every push and pull request.
 

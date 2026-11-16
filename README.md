@@ -21,8 +21,8 @@ Version 0.9 is the version these kits follow. The spec is published at launch.
 
 | Folder | Package | Language | Status |
 |---|---|---|---|
-| [`ts/`](ts/) | `@mcp-write-safety/kit` | TypeScript, Node 20 or later | 0.1.0, not published |
-| [`py/`](py/) | `mcp-write-safety-kit` (import `mws_kit`) | Python 3.10 or later, MCP Python SDK 1.x and 2.x | 0.1.0, not published |
+| [`ts/`](ts/) | `@mcp-write-safety/kit` | TypeScript, Node 20 or later | 0.1.0 on [npm](https://www.npmjs.com/package/@mcp-write-safety/kit) |
+| [`py/`](py/) | `mcp-write-safety-kit` (import `mws_kit`) | Python 3.10 or later, MCP Python SDK 1.x and 2.x | 0.1.0 on [PyPI](https://pypi.org/project/mcp-write-safety-kit/) |
 
 Both kits give the same helpers:
 
