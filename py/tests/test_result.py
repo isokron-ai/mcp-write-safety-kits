@@ -350,3 +350,27 @@ def test_golden_first_block_shared_with_the_typescript_kit():
 def test_a_complete_conflict_state_may_stand_in_for_the_read():
     t = texts(k.conflict("a", current_version=3, current_state={"t": 1}, read_tool="get", checked_by="backend"))[0]
     assert 'Build the write again from them, or read it with "get" and the arguments {"id":"a"}; do not resend your earlier values with the new version.' in t
+
+
+def test_golden_file_has_the_pinned_sha256():
+    """The same bytes as the TypeScript kit's test/golden/first-sentence.json and the spec's
+    spec/shapes/first-sentence.json."""
+    import hashlib
+    from pathlib import Path
+
+    data = (Path(__file__).parent / "golden" / "first-sentence.json").read_bytes()
+    assert hashlib.sha256(data).hexdigest() == "5d6f8d965b3e21e148c3a31dea1af458c90892a68c274f33ce489d724d5d8326"
+
+
+def test_not_permitted_is_reserved_with_not_applied_and_listed_in_the_schema():
+    from pathlib import Path
+
+    from mws_kit.result import CODES, ShapeError, assert_shape
+
+    assert len(CODES) == 14 and CODES["not_permitted"] == "not_applied"
+    schema = json.loads((Path(k.__file__).parent / "write-result-0.1.schema.json").read_text(encoding="utf-8"))
+    for c in CODES:
+        assert c in schema["properties"]["code"]["$comment"]
+    assert_shape({"mws": {"shape": "write-result/0.1", "outcome": "not_applied", "repeat": "no", "code": "not_permitted"}})
+    with pytest.raises(ShapeError):
+        assert_shape({"mws": {"shape": "write-result/0.1", "outcome": "unknown", "repeat": "read_first", "code": "not_permitted"}})

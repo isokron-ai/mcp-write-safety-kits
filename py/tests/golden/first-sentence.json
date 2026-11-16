@@ -221,5 +221,23 @@
       "summary": "note \"n-3\" changed since version 2"
     },
     "text": "Not applied: note \"n-3\" changed since version 2. Nothing was changed.\nIts current version is in the JSON below.\nBefore writing again, read it with \"get_note\" and the arguments {\"id\":\"n-3\"} and build the write from what the read shows."
+  },
+  {
+    "name": "not permitted",
+    "shape": {
+      "shape": "write-result/0.1",
+      "outcome": "not_applied",
+      "repeat": "no",
+      "operation": "update",
+      "code": "not_permitted",
+      "object": {
+        "type": "item",
+        "id": 42
+      }
+    },
+    "options": {
+      "summary": "writes are disabled on this server (read-only mode)"
+    },
+    "text": "Not applied: writes are disabled on this server (read-only mode). Nothing was changed.\nDo not send the same call again."
   }
 ]

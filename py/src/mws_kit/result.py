@@ -80,7 +80,7 @@ Outcome = Literal["applied", "not_applied", "partial", "unknown", "accepted"]
 Repeat = Literal["no", "yes", "same_key", "same_version", "read_first"]
 ItemOutcome = Literal["applied", "not_applied", "not_attempted", "unknown"]
 
-#: The 13 codes that version 0.1 reserves, with the outcome each one goes with.
+#: The 14 codes that version 0.1 reserves, with the outcome each one goes with.
 CODES: dict[str, str] = {
     "conflict": "not_applied",
     "locked": "not_applied",
@@ -91,6 +91,9 @@ CODES: dict[str, str] = {
     "in_progress": "unknown",
     "key_not_known": "unknown",
     "unavailable": "not_applied",
+    # Writes are disabled (a read-only mode or a setting), the tool is switched off, or the caller may not make this
+    # write: a repeat meets it again, so ``repeat`` stays ``no``.
+    "not_permitted": "not_applied",
     "not_sent": "not_applied",
     "no_answer": "unknown",
     "backend_error": "unknown",

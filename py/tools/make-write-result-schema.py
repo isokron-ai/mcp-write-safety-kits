@@ -34,7 +34,7 @@ S = {
         "message": {"type": "string"},
         "conflict": {"$ref": "#/$defs/conflict"}}}},
     "applied_count": {"type": "integer", "minimum": 0},
-    "code": {"$comment": "Reserved in 0.1: conflict, locked, version_required, invalid_argument, not_found, idempotency_key_reused, in_progress, key_not_known, unavailable, not_sent, no_answer, backend_error, internal_error. A server may define others.", **code},
+    "code": {"$comment": "Reserved in 0.1: conflict, locked, version_required, invalid_argument, not_found, idempotency_key_reused, in_progress, key_not_known, unavailable, not_permitted, not_sent, no_answer, backend_error, internal_error. A server may define others.", **code},
     "message": {"type": "string"},
     "argument": ptr,
     "argument_errors": {"type": "array", "items": {"type": "object", "required": ["argument"], "properties": {"argument": ptr, "code": code, "message": {"type": "string"}}}},

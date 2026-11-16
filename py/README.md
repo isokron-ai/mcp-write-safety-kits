@@ -101,18 +101,22 @@ own output:
 | ids and versions | A string or an integer, in the JSON type the tool's argument for the value accepts (an integer beyond 2^53-1 is given as a string). The kit passes them through as your read returns them. |
 | `changed` | JSON Pointers into the object as the read tool returns it. `[]` says nothing changed; a missing member says nothing. A create lists the fields the call set (not server-managed fields, defaults or the scope argument), or `[""]`; a delete leaves it out. |
 | `items`, `applied_count` | One entry per item or step: `index` (an item of a list the call gave), `step`, `id` (once the object exists), `version`, `outcome` (`applied`, `not_applied`, `not_attempted`, `unknown`), `code`, `message`, and `conflict` for that item's object. A selector write lists the objects not applied by `id`, with `applied_count`; one that matched nothing is `applied`, `applied_count: 0`, `items: []`. |
-| `code`, `message` | A stable code and words. The 13 reserved codes: `conflict`, `locked`, `version_required`, `invalid_argument`, `not_found`, `idempotency_key_reused` and `unavailable`, `not_sent` (with `not_applied`); `in_progress`, `key_not_known`, `no_answer`, `backend_error`, `internal_error` (with `unknown`). A server may define its own. |
+| `code`, `message` | A stable code and words. The 14 reserved codes: `conflict`, `locked`, `version_required`, `invalid_argument`, `not_found`, `idempotency_key_reused` and `unavailable`, `not_permitted`, `not_sent` (with `not_applied`); `in_progress`, `key_not_known`, `no_answer`, `backend_error`, `internal_error` (with `unknown`). A server may define its own. `not_permitted` is for a write refused because writes are disabled (a read-only mode or a setting), the tool is switched off, or the caller may not make it: a repeat meets it again, so `repeat` stays `no`; `unavailable` is for a refusal that a later repeat may pass, such as a rate limit. |
 | `argument`, `argument_errors` | A JSON Pointer to the refused argument, and every refused argument with its own `code` and `message`. |
 | `conflict` | `current_version` (left out when there is none), `checked_by` (`backend` or `server`), `current_state`, `omitted`, `held_by`. A refusal because of several objects puts each object's conflict in its item, and has none at the top level. |
 | `read_with` | `{tool, arguments}`: a read tool and the arguments that address the object written. For a create, whose answer may have no id, a list or search whose arguments find the object; a read by key is better where the store can answer one. |
-| `replayed`, `operation`, `version_argument` | This call repeated an earlier one with the same idempotency key and applied nothing; the kind of write; the argument that takes the version. |
+| `replayed`, `operation`, `version_argument` | This call repeated an earlier one with the same idempotency key and applied nothing; the kind of write; the argument that takes the version. A replay keeps the first answer's `changed`; a server that does not have it leaves `changed` out, which says nothing (it is not `[]`). |
 
 The content has two text blocks. The first is generated from the shape: it opens with "Applied:",
 "Not applied:", "Partly applied:", "Outcome unknown:" or "Accepted:", marks a replay, names the
 changed fields and the version now, gives the instruction that `repeat` implies and the read to
 make, and does not restate the current state in prose. The second is `structuredContent`
-serialized as compact JSON, so that it parses back equal to it. Both kits render the first block by
-the same rules: `tests/golden/first-sentence.json` is the TypeScript kit's golden file, byte for byte.
+serialized as compact JSON, so that it parses back equal to it: a tester recognises the mirror by
+JSON equality with `structuredContent` (member order, white space and string escapes do not count),
+and reads a block that carries only `mws`, or adds or drops a member, as prose. Both kits render the
+first block by the same rules: `tests/golden/first-sentence.json` is the TypeScript kit's golden
+file, byte for byte, and the specification's `spec/shapes/first-sentence.json`, so a conflict's
+sentence is worded the same everywhere and never restates the state.
 
 The shape is also returned by a read tool registered with the kit when it refuses its input
 (`not_applied`, `invalid_argument`); a read tool's answers do not carry it.

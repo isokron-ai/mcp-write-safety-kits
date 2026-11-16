@@ -138,7 +138,7 @@
       "minimum": 0
     },
     "code": {
-      "$comment": "Reserved in 0.1: conflict, locked, version_required, invalid_argument, not_found, idempotency_key_reused, in_progress, key_not_known, unavailable, not_sent, no_answer, backend_error, internal_error. A server may define others.",
+      "$comment": "Reserved in 0.1: conflict, locked, version_required, invalid_argument, not_found, idempotency_key_reused, in_progress, key_not_known, unavailable, not_permitted, not_sent, no_answer, backend_error, internal_error. A server may define others.",
       "type": "string",
       "pattern": "^[a-z0-9_]+$"
     },

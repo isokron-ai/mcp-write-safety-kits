@@ -27,8 +27,8 @@ env:
   # mcp-writecheck pinned to the spec text with B-9 v2 (ae5d7d7). It cannot adopt a result shape by
   # name and version, so each manifest reads the kits' first text block (spec 7.3, rule 11).
   CLI_REF: f573a240efbb5fe7e0d972182d16676cb332d8b2
-  TS_PLAN_HASH: d5ef93741f7695e4
-  PY_PLAN_HASH: 3d655409acc2f306
+  TS_PLAN_HASH: 3c1fb14524fdcc78
+  PY_PLAN_HASH: c988c7166532baf4
 
 jobs:
   gate:

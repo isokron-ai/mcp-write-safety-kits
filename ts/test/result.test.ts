@@ -129,10 +129,19 @@ test("the JSON block is exactly JSON.stringify(structuredContent)", () => {
   }
 });
 
-test("13 reserved codes, each with its outcome", () => {
-  assert.equal(Object.keys(RESERVED_CODES).length, 13);
+test("14 reserved codes, each with its outcome", () => {
+  assert.equal(Object.keys(RESERVED_CODES).length, 14);
   const file = JSON.parse(readFileSync(new URL("../../schema/write-result-0.1.schema.json", import.meta.url), "utf8"));
   for (const c of Object.keys(RESERVED_CODES)) assert.match(file.properties.code.$comment, new RegExp(`\\b${c}\\b`));
+});
+
+test("not_permitted goes with not_applied, and a refusal with it leaves repeat at no", () => {
+  assert.equal(RESERVED_CODES.not_permitted, "not_applied");
+  const r = notApplied({ summary: "writes are disabled on this server (read-only mode)", code: "not_permitted" });
+  assert.equal(mws(r)["code"], "not_permitted");
+  assert.equal(mws(r)["repeat"], "no");
+  assert.equal(r.isError, true);
+  assert.throws(() => assertShape({ shape: "write-result/0.1", outcome: "unknown", repeat: "read_first", code: "not_permitted" } as WriteResult), /not_permitted/);
 });
 
 test("isError follows the outcome", () => {

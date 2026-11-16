@@ -5,7 +5,7 @@
 First version, for the MWS 0.9 comment window.
 
 - Results in the write-result shape 0.1 (MWS 0.9, Annex B, B-9, as approved): `structuredContent.mws`,
-  a statement generated from the shape and the serialized JSON as text, `isError` by outcome, the 13
+  a statement generated from the shape and the serialized JSON as text, `isError` by outcome, the 14
   reserved codes, `argument_errors`, per-item conflicts, `object.parent`, keyed repeats, and an
   `outputSchema` for every write tool. The shape's JSON Schema ships as
   `mws_kit/write-result-0.1.schema.json` (CC BY 4.0), the same file as the specification's.

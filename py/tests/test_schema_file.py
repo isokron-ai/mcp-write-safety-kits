@@ -11,7 +11,7 @@ from importlib import resources
 from pathlib import Path
 
 #: sha256 of src/mws_kit/write-result-0.1.schema.json, the spec's spec/shapes copy and the TypeScript kit's copy.
-PINNED_SHA256 = "8929b0cf56936ba591204ffe0b0960ede0230648180c5e5458956f80ed53f730"
+PINNED_SHA256 = "22d68eebc588970ea116c21c02c1cb7fde8e31e1f8d073793e486f8d7881c201"
 
 ROOT = Path(__file__).resolve().parent.parent
 

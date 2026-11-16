@@ -23,7 +23,7 @@ export type Repeat = "no" | "yes" | "same_key" | "same_version" | "read_first";
 /** The outcome of one item or step. */
 export type ItemOutcome = "applied" | "not_applied" | "not_attempted" | "unknown";
 
-/** The 13 codes that version 0.1 reserves, each with the outcome it implies. A server may define others. */
+/** The 14 codes that version 0.1 reserves, each with the outcome it implies. A server may define others. */
 export const RESERVED_CODES = {
   conflict: "not_applied",
   locked: "not_applied",
@@ -34,6 +34,8 @@ export const RESERVED_CODES = {
   in_progress: "unknown",
   key_not_known: "unknown",
   unavailable: "not_applied",
+  /** Writes are disabled (a read-only mode or a setting), the tool is switched off, or the caller may not make this write: a repeat meets it again. */
+  not_permitted: "not_applied",
   not_sent: "not_applied",
   no_answer: "unknown",
   backend_error: "unknown",
