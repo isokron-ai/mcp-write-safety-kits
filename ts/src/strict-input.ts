@@ -208,7 +208,8 @@ function checkValue(schema: JsonSchema, value: unknown, path: string, issues: In
     const allowed = Array.isArray(schema.type) ? schema.type : [schema.type];
     if (!allowed.some((t) => typeMatches(t, actual))) {
       const expected = allowed.join(" or ");
-      add(`expected ${expected}, got ${typeName(value)} ${shown(value)}`, expected);
+      const got = value === null ? "null" : `${typeName(value)} ${shown(value)}`;
+      add(`expected ${expected}, got ${got}`, expected);
       return;
     }
   } else if (actual === "other" || actual === "undefined") {

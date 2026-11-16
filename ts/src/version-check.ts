@@ -27,8 +27,11 @@ export interface Current<S> {
 export interface WriteReceipt {
   /** The object's version after the write. */
   version?: Version;
-  /** The fields the write changed (an empty list for a write that changed nothing). */
-  changed: string[];
+  /**
+   * The fields the write changed; an empty list says the write changed nothing (a no-op). Leave it
+   * out for a delete, where "no field changed" would be false.
+   */
+  changed?: string[];
   /** The object's id after the write, where it differs (rare). */
   id?: Id;
 }
@@ -96,7 +99,7 @@ export interface CompareAndSetOptions<S> {
   write(current: Current<S>): MaybePromise<WriteReceipt>;
   /** The compact state to put in a conflict (default: the state as read). Leave out large or secret fields. */
   conflictState?(state: S): Record<string, unknown>;
-  /** One sentence for the receipt, without the opening word: `updated note "n-3"`. Default: `wrote <noun> "<id>"`. */
+  /** One sentence for the receipt, without the opening word: `updated note "n-3"`. Default: `wrote <noun> "<id>"`. Quote values with q(). */
   summary?(receipt: WriteReceipt): string;
   /** See MwsResult.safe_to_repeat for the receipt. Default: true when a version guarded the write. */
   safeToRepeat?: boolean;
