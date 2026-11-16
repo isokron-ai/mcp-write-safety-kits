@@ -53,6 +53,7 @@ const updateTitle = defineTool<{ id: string; expected_version: number; title: st
     id, type: "document", expectedVersion: expected_version, readWith: { tool: "get_document", arguments: { id } },
     read: async () => { const d = await db.get(id); return d && { version: d.version, state: d }; },
     write: async () => { const d = await db.setTitle(id, title); return { version: d.version, changed: ["/title"] }; },
+    conflictFields: ["id", "title", "version"],   // what a conflict may show; without it, none of the state
   }),
 });
 
@@ -115,12 +116,13 @@ Every result the kit builds for a write carries the write-result shape, version 
 
 `compareAndSet(options)`: MWS-CONC-1, CONC-2, CONC-4, CONC-6; Annex B-2 to B-4.
 
-The caller sends the version it read. The helper reads the current version through your `read` callback and compares before it calls your `write` callback. On a mismatch nothing is written, and the caller gets a conflict: a tool execution error with `code: "conflict"`, `repeat: "read_first"`, `conflict.current_version` on its own beside `conflict.current_state`, `read_with` and `version_argument`. Its text tells the caller to build the write again from that state or read again, not to resend its earlier values with the new version.
+The caller sends the version it read. The helper reads the current version through your `read` callback and compares before it calls your `write` callback. On a mismatch nothing is written, and the caller gets a conflict: a tool execution error with `code: "conflict"`, `repeat: "read_first"`, `conflict.current_version` on its own, `read_with` and `version_argument`, and `conflict.current_state` where you declared which fields it may carry (`conflictFields`). Its text tells the caller to build the write again from that state or read again, not to resend its earlier values with the new version.
 
 - `requireVersion` (default `true`): a call without a version is refused with `code: "version_required"` and `argument` pointing to the version argument. A version the caller may leave out makes the unchecked write the default (MWS-CONC-2 guidance). Set it to `false` only for a field patch whose fields are independent.
 - `override`: the value of an explicit override argument whose default is off (such as `force: true`). It applies only when no version was sent; a version that was sent is always checked (MWS-CONC-1).
 - `VersionConflictError`: throw it from `write` when the backend's own precondition refused the write (an ETag with `If-Match`, Annex B-2). The helper returns the same conflict.
-- `conflictState`: returns `{ state, omitted }`: only fields the caller may read through the read tool, never a secret, and the JSON Pointers of the fields left out. Where fields are left out, the text asks for a read before writing again.
+- `conflictFields`: the allow-list for `current_state`: the top-level fields the caller may read through the read tool and that never hold a secret. Every other field of the state is named in `omitted`. **Without it (or `conflictState`), a conflict carries no `current_state`**: it gives `repeat: "read_first"` with `read_with`, and the caller reads the object. The kit never copies your read callback's whole state into a result by default.
+- `conflictState`: builds `{ state, omitted }` yourself instead: only fields the caller may read through the read tool, never a secret, and the JSON Pointers of the fields left out. Where fields are left out, the text asks for a read before writing again.
 - `versionSource`: `backend` (default) where the version is the backend's own, `server` where the server derives it (B-3).
 - `lock`: calls for the same object are serialized inside the process by default (Annex B-4). This closes the window between the comparison and the write for writers in one process only. Where other writers reach the backend directly, the comparison is best-effort (Annex B-3): pass the version to the backend as well, or say in the tool's description that stale writes are detected only on a best-effort basis (MWS-CONC-5).
 - A `write` callback that throws anything else gives an unknown outcome with `read_with`, and `repeat: "same_version"` where the call carried a version (`read_first` otherwise). The code is `no_answer` for a timeout or a lost connection and `internal_error` for any other error.

@@ -61,10 +61,32 @@ def test_matching_version_writes_and_returns_a_receipt():
     assert s.obj["title"] == "two"
 
 
+def test_by_default_a_conflict_carries_no_state():
+    s = Store()
+    s.obj.update(title="other writer", version=2, api_token="tok-SECRET-1")
+    r = guard(s).apply("a", 1, {"body": "mine"})
+    sh = structured_of(r)
+    assert sh["code"] == "conflict" and sh["repeat"] == "read_first"
+    assert sh["conflict"] == {"current_version": "2", "version_source": "backend"}
+    assert sh["read_with"] == {"tool": "get_thing", "arguments": {"id": "a"}}
+    assert "SECRET" not in text_of(r) and "SECRET" not in str(structured_of(r))
+    assert 'read with "get_thing"' in text_of(r)
+
+
+def test_allow_list_carries_only_listed_fields():
+    s = Store()
+    s.obj.update(title="other writer", version=2, api_token="tok-SECRET-1")
+    r = guard(s, state_fields=["title"]).apply("a", 1, {"body": "mine"})
+    c = structured_of(r)["conflict"]
+    assert c["current_state"] == {"title": "other writer"}
+    assert "/api_token" in c["omitted"]
+    assert "SECRET" not in text_of(r)
+
+
 def test_mismatch_is_a_conflict_nothing_written_current_state_carried():
     s = Store()
     s.obj.update(title="other writer", version=2)
-    r = guard(s).apply("a", 1, {"body": "mine"})
+    r = guard(s, state_fields=["title", "body", "version"]).apply("a", 1, {"body": "mine"})
     sh = structured_of(r)
     assert is_error_of(r)
     assert sh["outcome"] == "not_applied"
@@ -206,10 +228,10 @@ def test_omit_and_data_key():
     s = Store()
     s.obj["secret"] = "s3cr3t"
     s.obj["version"] = 2
-    g = guard(s, omit=["secret"], object_type="thing", data_key="thing")
+    g = guard(s, state_fields=["title", "secret"], omit=["secret"], object_type="thing", data_key="thing")
     r = g.apply("a", 1, {"title": "x"})
     c = structured_of(r)["conflict"]
-    assert "secret" not in c["current_state"] and c["omitted"] == ["/secret"]
+    assert "secret" not in c["current_state"] and "/secret" in c["omitted"]
     assert "s3cr3t" not in text_of(r)
     r = g.apply("a", 2, {"title": "x"})
     assert _sc(r)["thing"]["title"] == "x" and structured_of(r)["object"]["type"] == "thing"

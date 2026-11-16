@@ -234,3 +234,52 @@ def test_bad_schema_keywords_are_refused_at_definition_time():
     ):
         with pytest.raises(k.UnsupportedSchema):
             k.strict_schema(bad)
+
+
+# -- an error after the handler returned is never an argument refusal ------------------------------
+
+
+def test_plain_return_value_after_a_write_is_not_an_argument_refusal():
+    server = FastMCP("t")
+    kit = k.WriteSafety(server)
+    written: list[str] = []
+
+    @kit.read_tool(open_world=False)
+    def get_note(id: str) -> CallToolResult:  # noqa: A002
+        return k.read_answer({"id": id})
+
+    @kit.write_tool(read_tool="get_note", read_arguments={"id": "id"})
+    def save(id: str) -> Any:  # noqa: A002 - an existing handler that returns plain text
+        written.append(id)
+        return "done"
+
+    r = run(call(server, "save", {"id": "a"}))
+    assert written == ["a"]
+    if r.structured is not None and "mws" in r.structured:  # SDK 1.x refuses the plain return value
+        assert r.shape["outcome"] == "unknown" and r.shape["code"] != "invalid_argument"
+        assert "Nothing was changed" not in r.text
+
+
+def test_sdk_argument_validation_still_refuses_before_the_handler():
+    server = FastMCP("t")
+    kit = k.WriteSafety(server, strict=False)
+    written: list[int] = []
+
+    @kit.read_tool(open_world=False)
+    def get_note(id: str) -> CallToolResult:  # noqa: A002
+        return k.read_answer({"id": id})
+
+    @kit.write_tool(read_tool="get_note")
+    def save(count: int) -> CallToolResult:
+        written.append(count)
+        return k.applied("saved")
+
+    r = run(call(server, "save", {"count": "not a number"}))
+    assert written == []
+    assert r.shape["outcome"] == "not_applied" and r.shape["code"] == "invalid_argument"
+
+
+def test_pattern_dot_and_whitespace_follow_ecma():
+    schema = k.strict_schema({"type": "object", "properties": {"s": {"type": "string", "pattern": "^.+$"}, "w": {"type": "string", "pattern": "^\\s$"}}})
+    assert k.check_arguments(schema, {"s": "a\rb"})
+    assert k.check_arguments(schema, {"s": "ab", "w": " "}) == []

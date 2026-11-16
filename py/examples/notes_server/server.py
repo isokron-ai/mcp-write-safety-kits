@@ -79,7 +79,9 @@ def build(store: NoteStore | None = None) -> tuple[Any, NoteStore]:
     server = FastMCP("notes", instructions=INSTRUCTIONS)
     kit = WriteSafety(server)
     keys = Idempotency(ttl=24 * 3600)
-    guard = dict(read=store.snapshot, read_tool="get_note", noun="note", object_type="note")
+    # state_fields: what a conflict may show of a note (every field get_note returns; none is secret).
+    guard = dict(read=store.snapshot, read_tool="get_note", noun="note", object_type="note",
+                 state_fields=("id", "title", "body", "tags", "version"))
     notes = VersionGuard(write=store.patch, data_key="note", **guard)
     deletes = VersionGuard(write=store.delete, **guard)
 

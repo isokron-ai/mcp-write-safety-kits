@@ -55,7 +55,6 @@ class ToolSpec:
     strict: bool
     read_tool: str | None
     read_arguments: dict[str, str]
-    code: Any = None  # the handler's code object, to tell an error raised inside it from the SDK's own
 
 
 def _cause_chain(e: BaseException) -> list[BaseException]:
@@ -68,17 +67,23 @@ def _cause_chain(e: BaseException) -> list[BaseException]:
     return out
 
 
-def _raised_in(chain: list[BaseException], code: Any) -> bool:
-    """Whether any error of the chain passed through a frame running ``code`` (the handler)."""
-    if code is None:
-        return True  # unknown handler: assume it ran (the cautious reading)
-    for exc in chain:
-        tb = exc.__traceback__
-        while tb is not None:
-            if tb.tb_frame.f_code is code:
-                return True
-            tb = tb.tb_next
-    return False
+def _sdk_argument_error(tool: Any, arguments: Mapping[str, Any]) -> str | None:
+    """Runs the SDK's own argument validation (``pre_parse_json`` then ``arg_model``) before the
+    handler, as both SDK lines do inside ``call_tool``. Returns the first line of the error where
+    the SDK would refuse the arguments, else None. Done here, before anything runs, so that a
+    ValidationError raised later (inside the handler, or while the SDK converts its return value)
+    is never taken for a refusal of the arguments: by then the write may have been made."""
+    meta = getattr(tool, "fn_metadata", None)
+    model = getattr(meta, "arg_model", None)
+    if model is None:
+        return None
+    try:
+        data = dict(arguments)
+        pre = getattr(meta, "pre_parse_json", None)
+        model.model_validate(pre(data) if callable(pre) else data)
+    except Exception as e:  # noqa: BLE001 - the SDK raises pydantic's ValidationError
+        return str(e).splitlines()[0] if str(e) else type(e).__name__
+    return None
 
 
 class WriteSafety:
@@ -148,8 +153,7 @@ class WriteSafety:
             tool.parameters = schema
         if output is not False:
             self._set_output_schema(tool, _output_schema(None if output is True else output))  # type: ignore[arg-type]
-        code = getattr(inspect.unwrap(fn), "__code__", None)
-        self.specs[tool_name] = ToolSpec(tool_name, kind, schema, self.strict, read_tool, dict(read_arguments or {}), code)
+        self.specs[tool_name] = ToolSpec(tool_name, kind, schema, self.strict, read_tool, dict(read_arguments or {}))
 
     @staticmethod
     def _set_output_schema(tool: Any, schema: dict[str, Any]) -> None:
@@ -266,6 +270,14 @@ class WriteSafety:
             issues = check_arguments(spec.schema, arguments if arguments is not None else {})
             if issues:
                 return refuse_arguments(name, issues)
+        refused = _sdk_argument_error(self._tm.get_tool(name), arguments or {})
+        if refused is not None:
+            # The SDK would refuse these arguments before the handler runs: nothing was called.
+            return not_applied(
+                f"the arguments of {q(spec.name)} were refused",
+                code="invalid_argument",
+                message=refused,
+            )
         try:
             result = self._original(name, arguments, *args, **kwargs)
             return await result if inspect.isawaitable(result) else result
@@ -277,16 +289,10 @@ class WriteSafety:
             return self._write_failure(spec, e, arguments or {})
 
     def _write_failure(self, spec: ToolSpec, e: BaseException, arguments: Mapping[str, Any]) -> CallToolResult:
+        # The arguments passed the SDK's validation before the call (_call_tool), so an error here,
+        # a ValidationError included, came from the handler or from converting what it returned:
+        # the write may have been made.
         chain = _cause_chain(e)
-        if any(type(c).__name__ == "ValidationError" for c in chain) and not _raised_in(chain, spec.code):
-            # The SDK's own validation refused the arguments before the handler ran. A ValidationError
-            # raised inside the handler (say, while parsing the backend's answer) is not a refusal:
-            # the write may have been made, so it falls through to the unknown outcome below.
-            return not_applied(
-                f"the arguments of {q(spec.name)} were refused",
-                code="invalid_argument",
-                message=str(e).splitlines()[0],
-            )
         root = chain[-1]
         for c in chain:
             if isinstance(c, (NotAppliedError, OutcomeUnknownError)):

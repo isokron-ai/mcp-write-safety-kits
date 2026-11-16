@@ -134,19 +134,30 @@ def _shown(v: Any, limit: int = 80) -> str:
 # Patterns
 
 
+_ECMA_ESCAPES = {"d": "[0-9]", "D": "[^0-9]", "w": "[A-Za-z0-9_]", "W": "[^A-Za-z0-9_]"}
+_ECMA_CLASS_ESCAPES = {"d": "0-9", "w": "A-Za-z0-9_"}
+
+
 @functools.lru_cache(maxsize=512)
 def _pattern(source: str) -> re.Pattern[str]:
     """A JSON Schema ``pattern`` (ECMA-262) compiled for Python's ``re`` with the ECMA meaning of the
-    two constructs that differ in ways that matter for a check: ``$`` matches only at the very end
+    constructs that differ in ways that matter for a check: ``$`` matches only at the very end
     (Python's also matches before a final newline, which would let ``"n-3\\n"`` through
-    ``^n-[0-9]+$``), and ``\\d``/``\\w`` match ASCII only. Raises :class:`UnsupportedSchema` for a
-    pattern that does not compile."""
+    ``^n-[0-9]+$``), ``.`` matches no line terminator (``\\n``, ``\\r``, U+2028, U+2029), and
+    ``\\d``/``\\w`` (and ``\\D``/``\\W``) are ASCII only. ``\\s`` keeps its Unicode meaning, as
+    in ECMA-262. Raises :class:`UnsupportedSchema` for a pattern that does not compile."""
     out: list[str] = []
     i, in_class = 0, False
     while i < len(source):
         ch = source[i]
         if ch == "\\" and i + 1 < len(source):
-            out.append(source[i : i + 2])
+            esc = source[i + 1]
+            if in_class and esc in _ECMA_CLASS_ESCAPES:
+                out.append(_ECMA_CLASS_ESCAPES[esc])
+            elif not in_class and esc in _ECMA_ESCAPES:
+                out.append(_ECMA_ESCAPES[esc])
+            else:
+                out.append(source[i : i + 2])
             i += 2
             continue
         if in_class:
@@ -158,10 +169,14 @@ def _pattern(source: str) -> re.Pattern[str]:
             out.append(r"(?:\Z)")
             i += 1
             continue
+        elif ch == ".":
+            out.append("[^\n\r\u2028\u2029]")
+            i += 1
+            continue
         out.append(ch)
         i += 1
     try:
-        return re.compile("".join(out), re.ASCII)
+        return re.compile("".join(out))
     except re.error as e:
         raise UnsupportedSchema(f"the pattern {source!r} does not compile: {e}") from None
 

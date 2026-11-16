@@ -58,7 +58,8 @@ def write(note_id, change, expected_version):
 
 server = MCPServer("notes")
 kit = WriteSafety(server)            # strict inputs for every tool registered through the kit
-guard = VersionGuard(read=read, write=write, read_tool="get_note", noun="note")
+guard = VersionGuard(read=read, write=write, read_tool="get_note", noun="note",
+                     state_fields=["id", "title", "version"])   # what a conflict may show; without it, none
 
 @kit.read_tool(open_world=False)
 def get_note(id: str) -> CallToolResult:
@@ -130,7 +131,7 @@ advertised schema, and the tests run them.
 | Situation | Result |
 |---|---|
 | The version matches | `applied`, `object.version` the new version, `changed` the fields that differ (JSON Pointers) |
-| It does not match, or `write` raises `VersionConflict` | `not_applied`, `code: "conflict"`, `repeat: "read_first"`, `conflict.current_version` and `current_state` (minus the fields in `omit`, listed in `omitted`), `read_with`, `version_argument` |
+| It does not match, or `write` raises `VersionConflict` | `not_applied`, `code: "conflict"`, `repeat: "read_first"`, `conflict.current_version`, `read_with`, `version_argument`; `current_state` only with `state_fields` (the fields listed there, minus `omit`; every other field named in `omitted`) |
 | No version, with `require_version=True` (the default) | `not_applied`, `code: "version_required"`, `argument: "/expected_version"` |
 | `write` loses the answer (timeout, reset) | `unknown`, `code: "no_answer"`, `repeat: "same_version"` |
 | The request was never sent (connection refused) | `not_applied`, `code: "not_sent"` |
@@ -144,6 +145,13 @@ Where the backend can check the version (an `If-Match` precondition, a condition
 form (Annex B-2). The guard's own comparison runs under a per-object lock in this process
 (Annex B-3, B-4); a writer outside the process can still slip in between. If your backend cannot
 check versions, say so in the tool's description (MWS-CONC-5) and set `version_source="server"`.
+
+**What a conflict shows.** `state_fields` is the allow-list for `conflict.current_state`: the
+top-level fields the caller may read through the read tool and that never hold a secret. Every other
+field of the state is named in `conflict.omitted`, and `omit` removes fields even where the list
+names them. Without `state_fields`, a conflict carries no `current_state`: it gives
+`repeat: "read_first"` with `read_with`, and the caller reads the object (draft B-9 allows exactly
+this). The kit never copies the whole state your `read` returns into a result by default.
 
 ### 2. Retry keys
 
@@ -217,10 +225,12 @@ applied, not applied or not attempted; never a success when not complete).
 that settles it, and sets `repeat` to `read_first`, or to `same_key` / `same_version` where the call
 carried a key or version that guards a repeat. `guard_write` and `guard_write_async` run a write and
 map what it raises: `NotAppliedError` and an unsent request (connection refused, name not resolved,
-connect errors of httpx, aiohttp and requests) become `not_applied`; anything else becomes `unknown`,
+connect errors of httpx, aiohttp and urllib3) become `not_applied`; anything else becomes `unknown`,
 with `code: "no_answer"` for a timeout or a lost connection and `code: "internal_error"` for any
 other error. Only an explicit cause (`raise ... from ...`) is followed: an error raised while
-another was being handled is classified by itself. Raw exception messages are not copied into results (a client error can
+another was being handled is classified by itself. requests wraps its connection errors without
+an explicit cause, so they read as `unknown` (the cautious reading); raise `NotAppliedError` yourself
+where you know that nothing was sent. Raw exception messages are not copied into results (a client error can
 carry a URL with a token); only the class name is given, or the message of an `OutcomeUnknownError`
 you raise yourself.
 

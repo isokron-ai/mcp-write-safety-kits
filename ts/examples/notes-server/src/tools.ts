@@ -31,10 +31,8 @@ function data(value: Record<string, unknown>): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
 }
 
-/** The note as get_note returns it, for conflicts: every field the caller may read; nothing secret, nothing left out. */
-function asRead(n: Note): { state: Record<string, unknown> } {
-  return { state: { ...n } };
-}
+/** The fields of a note that get_note returns and that hold no secret: the allow-list for the state a conflict carries. */
+const READABLE_NOTE_FIELDS: Array<keyof Note> = ["id", "notebook", "title", "body", "tags", "status", "version", "created_at", "updated_at"];
 
 /** The structured output of every write tool: only the write-result shape (outputSchema, B-9 advice). */
 const WRITE_OUTPUT = outputSchemaFor();
@@ -185,7 +183,7 @@ export function buildTools(store: NotesStore): ToolSet {
         const { note, changed } = store.patchNote(id, fields);
         return { version: note.version, changed };
       },
-      conflictState: asRead,
+      conflictFields: READABLE_NOTE_FIELDS,
       summary: (r) => r.changed?.length ? `updated note ${q(id)}; it is now at version ${q(r.version)}` : `note ${q(id)} already had these values; nothing changed`,
     }),
   });
@@ -213,7 +211,7 @@ export function buildTools(store: NotesStore): ToolSet {
         store.deleteNote(id);
         return { version: cur.version };
       },
-      conflictState: asRead,
+      conflictFields: READABLE_NOTE_FIELDS,
       summary: () => `deleted note ${q(id)}`,
     }),
   });

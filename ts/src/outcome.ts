@@ -99,8 +99,9 @@ function codeOf(e: unknown): string | undefined {
 }
 
 /** Error codes and names meaning the request may have been sent and its answer was lost. */
-const LOST_ANSWER_CODES = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNABORTED", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "ABORT_ERR"]);
-const LOST_ANSWER_NAMES = new Set(["TimeoutError", "AbortError"]);
+// An abort (AbortError, ABORT_ERR) is left out: it can come before the request was sent.
+const LOST_ANSWER_CODES = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNABORTED", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
+const LOST_ANSWER_NAMES = new Set(["TimeoutError"]);
 
 /**
  * The code for an unknown outcome caused by `e`: "no_answer" (fixed by B-9: a request was sent and

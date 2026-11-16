@@ -133,7 +133,8 @@ def classify_error(e: BaseException) -> ErrorClass:
     """How an error raised while sending a write bears on it.
 
     ``"not_applied"``: the backend refused it (:class:`NotAppliedError`), or the request was never
-    sent (connection refused, name not resolved, a connect error of httpx, aiohttp or requests):
+    sent (connection refused, name not resolved, a connect error of httpx, aiohttp or urllib3;
+    requests wraps its errors without an explicit cause, so they read as unknown):
     the outcome is settled and nothing was applied.
 
     ``"unknown"``: the request may have been sent and no answer arrived (a read timeout, a reset

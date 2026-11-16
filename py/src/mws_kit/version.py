@@ -117,9 +117,14 @@ class VersionGuard(Generic[C]):
     :param ignore: fields left out of ``changed`` (server-managed fields such as timestamps); the
         version field is always left out.
     :param version_field: the name of the version in the state, left out of ``changed``.
-    :param omit: fields left out of the current state a conflict carries: any field the caller may
-        not read through the read tool, any secret, and long histories. They are listed in
-        ``conflict.omitted``.
+    :param state_fields: the allow-list for the current state a conflict carries: the top-level
+        fields the caller may read through the read tool and that never hold a secret. Every other
+        field of the state is listed in ``conflict.omitted``. Without it (the default), a conflict
+        carries no ``current_state``: it gives ``repeat: "read_first"`` with ``read_with``, and the
+        caller reads the object (draft B-9). The kit never copies the whole state ``read`` returns
+        into a result by default.
+    :param omit: fields to leave out even where ``state_fields`` lists them (long histories, say).
+        They are listed in ``conflict.omitted``.
     :param version_source: ``"backend"`` where the version is the backend's own, ``"server"`` where
         the server derives it (Annex B-3: a best-effort check).
     :param object_type: ``object.type`` in results (``"note"``).
@@ -136,6 +141,7 @@ class VersionGuard(Generic[C]):
     require_version: bool = True
     ignore: Sequence[str] = ()
     version_field: str = "version"
+    state_fields: Sequence[str] | None = None
     omit: Sequence[str] = ()
     version_source: str = "backend"
     object_type: str | None = None
@@ -215,13 +221,18 @@ class VersionGuard(Generic[C]):
         )
 
     def _conflict(self, id: Id, current: Snapshot, operation: str) -> CallToolResult:  # noqa: A002
-        state = {k: v for k, v in current.state.items() if k not in self.omit}
+        state: dict[str, Any] | None = None
+        omitted: list[str] = []
+        if self.state_fields is not None:
+            allowed = set(self.state_fields) - set(self.omit)
+            state = {k: v for k, v in current.state.items() if k in allowed}
+            omitted = [pointer(k) for k in current.state if k not in allowed]
         return conflict(
             id,
             current_version=current.version,
             version_source=self.version_source,  # type: ignore[arg-type]
             current_state=state,
-            omitted=[pointer(k) for k in self.omit if k in current.state],
+            omitted=omitted,
             read_tool=self.read_tool,
             noun=self.noun,
             object_type=self.object_type,

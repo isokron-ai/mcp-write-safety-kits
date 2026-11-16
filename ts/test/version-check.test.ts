@@ -35,10 +35,10 @@ test("matching version: applied, receipt with the new version and changed fields
   assert.equal(sh.version_argument, "expected_version");
 });
 
-test("stale version: conflict, nothing written, current version and state carried", async () => {
+test("stale version: conflict, nothing written, current version and the allowed state carried", async () => {
   const s = store();
   await s.cas("d1", 1, "b");
-  const r = await s.cas("d1", 1, "c");
+  const r = await s.cas("d1", 1, "c", { conflictFields: ["title", "tags"] });
   assert.equal(r.isError, true);
   assert.deepEqual(s.writes, ["b"]);
   const sh = readResult(r)!;
@@ -47,6 +47,31 @@ test("stale version: conflict, nothing written, current version and state carrie
   assert.equal(sh.code, "conflict");
   assert.equal(sh.repeat, "read_first");
   assert.match(text(r), /Nothing was changed/);
+});
+
+test("by default a conflict carries no state: read_first with read_with, nothing of the read leaks", async () => {
+  const docs = new Map<string, Current<{ title: string; api_token: string }>>([["d1", { version: 2, state: { title: "b", api_token: "tok-SECRET-1" } }]]);
+  const r = await compareAndSet({
+    id: "d1", type: "doc", expectedVersion: 1, readWith: { tool: "get_doc", arguments: { id: "d1" } },
+    read: () => docs.get("d1"), write: () => ({ version: 3 }),
+  });
+  const sh = readResult(r)!;
+  assert.deepEqual(sh.conflict, { current_version: "2", version_source: "backend" });
+  assert.equal(sh.repeat, "read_first");
+  assert.deepEqual(sh.read_with, { tool: "get_doc", arguments: { id: "d1" } });
+  assert.doesNotMatch(JSON.stringify(r), /SECRET/);
+  assert.match(text(r), /Before writing again, read it with "get_doc"/);
+});
+
+test("an allow-list carries only the listed fields and names the rest in omitted", async () => {
+  const r = await compareAndSet({
+    id: "d1", type: "doc", expectedVersion: 1, readWith: { tool: "get_doc", arguments: { id: "d1" } },
+    read: () => ({ version: 2, state: { title: "b", api_token: "tok-SECRET-1" } }), write: () => ({ version: 3 }),
+    conflictFields: ["title"],
+  });
+  const sh = readResult(r)!;
+  assert.deepEqual(sh.conflict, { current_version: "2", version_source: "backend", current_state: { title: "b" }, omitted: ["/api_token"] });
+  assert.doesNotMatch(JSON.stringify(r), /SECRET/);
 });
 
 test("versions compare as strings by default (\"2\" matches 2)", async () => {
@@ -89,6 +114,7 @@ test("a backend version refusal becomes the same conflict", async () => {
     id: "d", expectedVersion: 1, readWith: { tool: "get_doc", arguments: { id: "d" } }, type: "doc",
     read: () => ({ version: 1, state: { title: "a", tags: [] } }),
     write: () => { throw new VersionConflictError({ version: 5, state: { title: "z" } }); },
+    conflictFields: ["title", "tags"],
   });
   assert.deepEqual(readResult(r)!.conflict, { current_version: "5", version_source: "backend", current_state: { title: "z" } });
 });

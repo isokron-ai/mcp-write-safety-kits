@@ -100,9 +100,19 @@ export interface CompareAndSetOptions<S> {
   /** Writes. Called only when the versions match (or the override applies). */
   write(current: Current<S>): MaybePromise<WriteReceipt>;
   /**
-   * The state to put in a conflict: only fields the caller may read through the read tool, never
-   * a secret. Return `omitted` with the JSON Pointers of the fields left out. Default: the state as
-   * read, with nothing omitted.
+   * The allow-list for the state a conflict carries: the top-level fields the caller may read
+   * through the read tool and that never hold a secret. The conflict carries those fields as
+   * `current_state` and lists every other field of the state in `omitted`.
+   *
+   * Without `conflictFields` or `conflictState`, a conflict carries no `current_state`: it gives
+   * `repeat: "read_first"` with `read_with`, and the caller reads the object (B-9). The kit never
+   * copies the read callback's whole state into a result by default.
+   */
+  conflictFields?: string[];
+  /**
+   * Builds the state a conflict carries yourself, instead of `conflictFields`: only fields the
+   * caller may read through the read tool, never a secret, with `omitted` naming the JSON Pointers
+   * of the fields left out.
    */
   conflictState?(state: S): { state: Record<string, unknown>; omitted?: string[] };
   /** One sentence for the receipt, without the opening word: `updated note "n-3"`. Quote values with q(). */
@@ -114,6 +124,18 @@ export interface CompareAndSetOptions<S> {
 }
 
 const sameVersion = (a: Scalar, b: Scalar) => String(a) === String(b);
+
+/** The state a conflict may carry: only what the server declared safe, else none. */
+function conflictStateOf<S>(state: S, o: Pick<CompareAndSetOptions<S>, "conflictFields" | "conflictState">): { state?: Record<string, unknown>; omitted?: string[] } {
+  if (o.conflictState) return o.conflictState(state);
+  if (!o.conflictFields) return {};
+  if (typeof state !== "object" || state === null || Array.isArray(state)) return {};
+  const all = state as unknown as Record<string, unknown>;
+  const allow = new Set(o.conflictFields);
+  const picked = Object.fromEntries(Object.entries(all).filter(([k]) => allow.has(k)));
+  const omitted = Object.keys(all).filter((k) => !allow.has(k)).map(pointer);
+  return omitted.length ? { state: picked, omitted } : { state: picked };
+}
 
 /**
  * Compare-and-set. Returns a receipt, a conflict, a not-found refusal, a refusal that asks for the
@@ -135,7 +157,7 @@ export async function compareAndSet<S>(o: CompareAndSetOptions<S>): Promise<Call
   }
   const object = { type, id: o.id };
   const conflictFor = (cur: Current<S>, source: "backend" | "server"): CallToolResult => {
-    const c = o.conflictState ? o.conflictState(cur.state) : { state: cur.state as unknown as Record<string, unknown> };
+    const c = conflictStateOf(cur.state, o);
     return conflict({
       id: o.id, type, operation, currentVersion: cur.version, versionSource: source,
       currentState: c.state, omitted: c.omitted, versionArgument: arg, readWith: o.readWith,
