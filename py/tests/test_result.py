@@ -53,7 +53,7 @@ def test_applied_receipt():
         (lambda: k.accepted("x"), "accepted", False, "Accepted: x. The backend has not yet reported the result."),
         (lambda: k.not_applied("x"), "not_applied", True, "Not applied: x. Nothing was changed."),
         (
-            lambda: k.partial("x", items=[k.item(0, "applied", id="a"), k.item(1, "not_applied", id="b", code="not_found")]),
+            lambda: k.partial("x", items=[k.item(0, "applied", id="a"), k.item(1, "not_applied", id="b", code="not_found")], read_with=k.read_with("list")),
             "partial",
             True,
             "Partly applied: x.",
@@ -97,6 +97,7 @@ def test_partial_names_every_item_and_falls_back_to_not_applied():
             k.item(1, "not_applied", id="n-2", code="not_found", message="does not exist"),
             k.item(2, "not_attempted", id="n-3"),
         ],
+        read_with=k.read_with("list_notes"),
     )
     m = mws(r)
     assert m["outcome"] == "partial" and m["repeat"] == "read_first"
@@ -194,7 +195,7 @@ def test_every_builder_output_matches_the_shipped_schema():
         k.applied("x", object={"id": "a", "version": 1}, changed=[], operation="create"),
         k.accepted("x"),
         k.not_applied("y", code="invalid_argument", argument="/title", message="m"),
-        k.partial("z", items=[k.item(0, "applied", id="a"), k.item(1, "not_attempted")], applied_count=1),
+        k.partial("z", items=[k.item(0, "applied", id="a"), k.item(1, "not_attempted")], applied_count=1, read_with=k.read_with("get")),
         k.conflict("a", current_version=3, current_state={}, read_tool="get"),
         k.unknown_outcome("w", read_with=k.read_with("get")),
         k.as_replay(k.applied("x")),

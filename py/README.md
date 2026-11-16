@@ -158,7 +158,8 @@ check versions, say so in the tool's description (MWS-CONC-5) and set `version_s
   outcome (or, after `wait` seconds, get `unknown` with `code: "in_progress"` and
   `repeat: "same_key"`).
 - A first call that applied nothing releases the key; one whose outcome is unknown keeps it, so a
-  repeat applies nothing.
+  repeat applies nothing. That answer (and its replay) says `repeat: "read_first"` with the read
+  that settles it, and to send the write again with a new key if the read shows it was not applied.
 
 `IdempotencyStore` (and `AsyncIdempotencyStore`) is the protocol for your own store;
 `InMemoryIdempotencyStore` keeps keys in this process with a time to live. `describe()` gives a
@@ -197,8 +198,13 @@ Addresses **MWS-IN-1**, **IN-2**, **IN-3**, **IN-4**, **IN-6** and **IN-7**.
 `applied`, `accepted`, `not_applied`, `partial`, `conflict`, `unknown_outcome`, plus `item`,
 `read_with` and `pointer`. Each builds the `CallToolResult` with the shape, both text blocks and the
 right `isError`, and `assert_shape` refuses a result that breaks a rule of the shape (a version in
-`object` on `not_applied`, `repeat: "yes"` on `unknown`, a `current_version` with neither state nor
-`read_first`, a `null` member, and more). `as_replay` marks a stored result as a replay.
+`object` on `not_applied`, `repeat: "yes"` on `unknown` or after an applied delete, `read_first`
+with neither `read_with` nor `object.id`, `same_key` or `same_version` without the key or version
+the call carried, an open item outside `unknown`, a `current_version` with neither state nor
+`read_first`, a `null` member, and more). The first text block names the read wherever `read_with`
+is given. `as_replay` marks a stored result as a replay. `read_result` reads a result as the
+draft's reader rules say: another MAJOR version, or an unknown `outcome`, reads as no shape, and
+unknown or malformed members are left out.
 
 Addresses **MWS-RES-1** (report success only for an `applied` write, and `changed: []` for a
 no-op), **MWS-RES-2** (a failure is an error and says what remains applied), **MWS-RES-3** and
@@ -211,8 +217,10 @@ applied, not applied or not attempted; never a success when not complete).
 that settles it, and sets `repeat` to `read_first`, or to `same_key` / `same_version` where the call
 carried a key or version that guards a repeat. `guard_write` and `guard_write_async` run a write and
 map what it raises: `NotAppliedError` and an unsent request (connection refused, name not resolved,
-connect errors of httpx, aiohttp and requests) become `not_applied`; anything else becomes `unknown`
-with `code: "no_answer"`. Raw exception messages are not copied into results (a client error can
+connect errors of httpx, aiohttp and requests) become `not_applied`; anything else becomes `unknown`,
+with `code: "no_answer"` for a timeout or a lost connection and `code: "internal_error"` for any
+other error. Only an explicit cause (`raise ... from ...`) is followed: an error raised while
+another was being handled is classified by itself. Raw exception messages are not copied into results (a client error can
 carry a URL with a token); only the class name is given, or the message of an `OutcomeUnknownError`
 you raise yourself.
 
@@ -275,8 +283,9 @@ mcp-writecheck plan -m writecheck.yaml
 mcp-writecheck run  -m writecheck.yaml --confirm-target notes-server --plan-hash <hash from plan>
 ```
 
-`.github/workflows/mws.yml` runs the tests on SDK 1.x and 2.x with Python 3.10 and 3.13, then
-`mcp-writecheck` in plan, catalog and full mode through `isokron-ai/mcp-writecheck-action`.
+The repository's CI runs the tests on SDK 1.x and 2.x with Python 3.10 and 3.13. The
+`mcp-writecheck` run on the example is started by hand (`workflow_dispatch`) until the tester is
+published with the spec.
 
 A run reports a verdict per requirement and write path. A requirement the example cannot exercise,
 or that this preview of `mcp-writecheck` does not test for a tool, is reported `not tested` with the

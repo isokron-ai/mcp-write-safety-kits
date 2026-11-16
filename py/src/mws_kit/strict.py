@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import difflib
+import functools
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -130,6 +131,42 @@ def _shown(v: Any, limit: int = 80) -> str:
 
 
 # ------------------------------------------------------------------------------------------------
+# Patterns
+
+
+@functools.lru_cache(maxsize=512)
+def _pattern(source: str) -> re.Pattern[str]:
+    """A JSON Schema ``pattern`` (ECMA-262) compiled for Python's ``re`` with the ECMA meaning of the
+    two constructs that differ in ways that matter for a check: ``$`` matches only at the very end
+    (Python's also matches before a final newline, which would let ``"n-3\\n"`` through
+    ``^n-[0-9]+$``), and ``\\d``/``\\w`` match ASCII only. Raises :class:`UnsupportedSchema` for a
+    pattern that does not compile."""
+    out: list[str] = []
+    i, in_class = 0, False
+    while i < len(source):
+        ch = source[i]
+        if ch == "\\" and i + 1 < len(source):
+            out.append(source[i : i + 2])
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+        elif ch == "[":
+            in_class = True
+        elif ch == "$":
+            out.append(r"(?:\Z)")
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    try:
+        return re.compile("".join(out), re.ASCII)
+    except re.error as e:
+        raise UnsupportedSchema(f"the pattern {source!r} does not compile: {e}") from None
+
+
+# ------------------------------------------------------------------------------------------------
 # Checking
 
 
@@ -176,10 +213,11 @@ class _Checker:
                     out += self.check(sub, value, path)
                 if out:
                     return out
-        if "anyOf" in schema or "oneOf" in schema:
-            alt = self._alternatives(schema, value, path)
-            if alt:
-                return alt
+        for k in ("anyOf", "oneOf"):
+            if k in schema:
+                alt = self._alternatives(schema, value, path, k)
+                if alt:
+                    return alt
 
         types = schema.get("type")
         if types is not None:
@@ -202,7 +240,7 @@ class _Checker:
                 issues.append(ArgumentIssue(path, f"must be at least {schema['minLength']} characters long; got {n}"))
             if "maxLength" in schema and n > schema["maxLength"]:
                 issues.append(ArgumentIssue(path, f"must be at most {schema['maxLength']} characters long; got {n}"))
-            if "pattern" in schema and re.search(schema["pattern"], value) is None:
+            if "pattern" in schema and _pattern(schema["pattern"]).search(value) is None:
                 issues.append(ArgumentIssue(path, f"must match the pattern {q(schema['pattern'])}; got {_shown(value)}"))
         if _json_type(value) in ("integer", "number"):
             if "minimum" in schema and value < schema["minimum"]:
@@ -224,8 +262,7 @@ class _Checker:
             issues += self._object(schema, value, path)
         return issues
 
-    def _alternatives(self, schema: Mapping[str, Any], value: Any, path: tuple[str | int, ...]) -> list[ArgumentIssue]:
-        key = "anyOf" if "anyOf" in schema else "oneOf"
+    def _alternatives(self, schema: Mapping[str, Any], value: Any, path: tuple[str | int, ...], key: str) -> list[ArgumentIssue]:
         branches = [self.resolve(b) if isinstance(b, Mapping) else b for b in schema[key]]
         results = [self.check(b, value, path) for b in branches]
         passing = sum(1 for r in results if not r)
@@ -353,8 +390,23 @@ def _validate_keywords(node: Any, path: tuple[str, ...]) -> None:
     if not isinstance(node, Mapping):
         return
     unknown = {k for k in node if k not in SUPPORTED_KEYWORDS and not k.startswith("x-")}
+    where = "/".join(path) or "the top level"
     if unknown:
-        raise UnsupportedSchema(f"unsupported keyword(s) {sorted(unknown)} at {'/'.join(path) or 'the top level'}")
+        raise UnsupportedSchema(f"unsupported keyword(s) {sorted(unknown)} at {where}")
+    if "pattern" in node:
+        if not isinstance(node["pattern"], str):
+            raise UnsupportedSchema(f"pattern at {where} is not a string")
+        _pattern(node["pattern"])
+    for k in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"):
+        if k in node and (isinstance(node[k], bool) or not isinstance(node[k], (int, float)) or not math.isfinite(node[k])):
+            raise UnsupportedSchema(f"{k} at {where} must be a finite number (draft-04 boolean forms are not supported)")
+    for k in ("minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties"):
+        if k in node and (isinstance(node[k], bool) or not isinstance(node[k], int) or node[k] < 0):
+            raise UnsupportedSchema(f"{k} at {where} must be a non-negative integer")
+    if "required" in node and not (isinstance(node["required"], list) and all(isinstance(r, str) for r in node["required"])):
+        raise UnsupportedSchema(f"required at {where} must be a list of strings")
+    if "$ref" in node and not (isinstance(node["$ref"], str) and node["$ref"].startswith("#/")):
+        raise UnsupportedSchema(f"only local references are supported, not {node['$ref']!r} at {where}")
     for k, v in node.items():
         if k in ("properties", "$defs", "definitions") and isinstance(v, Mapping):
             for name, sub in v.items():

@@ -262,7 +262,7 @@ def render_text(
     rs = _repeat_sentence(m, key, version)
     if rs:
         lines.append(_sentence(rs))
-    if m.get("read_with") and m.get("repeat") != "read_first" and outcome != "applied":
+    if m.get("read_with") and m.get("repeat") != "read_first":
         lines.append(_sentence(f"To see the current state, {_read_sentence(m['read_with'])}"))
     return "\n".join(lines)
 
@@ -295,6 +295,8 @@ def assert_shape(structured: Mapping[str, Any]) -> None:
         fail(f"mws.repeat {q(rep)} is not one of {', '.join(_REPEATS)}")
     if rep == "yes" and o in ("unknown", "partial", "accepted"):
         fail(f'repeat "yes" does not go with outcome {q(o)} (MWS-RES-2: kind retry-invited)')
+    if rep == "yes" and o == "applied" and m.get("operation") == "delete":
+        fail('repeat "yes" does not go with an applied delete: a repeat can delete an object recreated in between')
     if "code" in m and not (isinstance(m["code"], str) and _CODE_RE.match(m["code"])):
         fail("mws.code must be lowercase letters, digits and underscores")
     obj = m.get("object")
@@ -311,6 +313,12 @@ def assert_shape(structured: Mapping[str, Any]) -> None:
     for it in m.get("items", []):
         if not isinstance(it.get("index"), int) or it.get("outcome") not in _ITEM_OUTCOMES:
             fail("each item has an integer index and an outcome of applied, not_applied, not_attempted or unknown")
+    if o in ("not_applied", "applied"):
+        outs = [it.get("outcome") for it in m.get("items", [])]
+        if "unknown" in outs:
+            fail(f"an item with an open outcome makes the whole outcome unknown, not {o}")
+        if o == "not_applied" and "applied" in outs:
+            fail("not_applied says no change is in effect; an applied item makes it partial")
     if o == "partial":
         outs = [it.get("outcome") for it in m.get("items", [])]
         if "unknown" in outs:
@@ -323,11 +331,16 @@ def assert_shape(structured: Mapping[str, Any]) -> None:
             fail('mws.conflict is present only where code is "conflict" or "locked"')
         if "current_version" in c and "current_state" not in c and rep != "read_first":
             fail('a current_version comes with current_state or with repeat "read_first" (MWS-CONC-6 guidance)')
+        if "current_version" in c and not (isinstance(c["current_version"], str) and c["current_version"]):
+            fail("conflict.current_version is a non-empty string, or is left out")
         if c.get("version_source") not in (None, "backend", "server"):
             fail('conflict.version_source is "backend" or "server"')
     rw = m.get("read_with")
-    if rw is not None and not (isinstance(rw.get("tool"), str) and isinstance(rw.get("arguments", {}), Mapping)):
+    if rw is not None and not (isinstance(rw, Mapping) and isinstance(rw.get("tool"), str) and rw["tool"]
+                               and isinstance(rw.get("arguments"), Mapping)):
         fail("mws.read_with is {tool, arguments}")
+    if rep == "read_first" and rw is None and not (isinstance(obj, Mapping) and obj.get("id")):
+        fail('repeat "read_first" names a read only with read_with or object.id; give read_with')
     if "replayed" in m and m["replayed"] is not True:
         fail("mws.replayed is true or left out")
 
@@ -349,6 +362,10 @@ def to_tool_result(
     name the guard behind ``repeat: "same_key"`` or ``"same_version"``.
     """
     m = {"shape": SHAPE, **{k: v for k, v in mws.items() if v is not None and k != "shape"}}
+    if m.get("repeat") == "same_key" and not (key and key[1] is not None):
+        raise ShapeError('repeat "same_key" only where the call carried an idempotency key: pass key=(argument, value)')
+    if m.get("repeat") == "same_version" and not (version and version[1] is not None):
+        raise ShapeError('repeat "same_version" only where the call carried a version: pass version=(argument, value)')
     if data is not None and "mws" in data:
         raise ShapeError("the tool's own output may not use the member name mws")
     structured = {**(dict(data) if data else {}), "mws": m}
@@ -477,16 +494,21 @@ def partial(
     operation: str | None = None,
     repeat: Repeat = "read_first",
     read_with: ReadWith | None = None,
+    object: Mapping[str, Any] | None = None,  # noqa: A002
     key: tuple[str, Any] | None = None,
     notes: Iterable[str] = (),
 ) -> CallToolResult:
     """A write of several items or steps, each settled or not attempted, some applied and some not
     (MWS-ATOM-1, RES-2). Never a success (``isError: true``). ``items`` names each one.
 
-    If no item was applied, this is :func:`not_applied` with the items. If any item's outcome is
-    open, use :func:`mws_kit.unknown_outcome` with the items.
+    If no item was applied, this is :func:`not_applied` with the items. An item whose outcome is
+    open makes the whole outcome unknown: use :func:`mws_kit.unknown_outcome` with the items (this
+    function refuses it). With ``repeat="read_first"`` (the default) give ``read_with``, or an
+    ``object`` with an ``id``.
     """
     outs = [i["outcome"] for i in items]
+    if "unknown" in outs:
+        raise ShapeError("an item with an open outcome makes the whole outcome unknown: use unknown_outcome(items=...)")
     if "applied" not in outs and not applied_count:
         return not_applied(summary, code=code, message=message, operation=operation, items=items, read_with=read_with, notes=notes)
     return to_tool_result(
@@ -494,6 +516,7 @@ def partial(
             "outcome": "partial",
             "repeat": repeat,
             "operation": operation,
+            "object": _object(object),
             "items": [dict(i) for i in items],
             "applied_count": applied_count,
             "code": code,
@@ -533,7 +556,7 @@ def conflict(
     ``"read_first"``: the state in the result may stand in for the read where nothing is omitted.
     """
     c: dict[str, Any] = {}
-    if current_version is not None:
+    if current_version is not None and str(current_version) != "":
         c["current_version"] = str(current_version)  # a string, as every version in the shape
         if version_source is not None:
             c["version_source"] = version_source
@@ -554,23 +577,98 @@ def conflict(
             "message": message or default,
             "conflict": c,
             "read_with": {"tool": read_tool, "arguments": {id_argument: id}},
-            "version_argument": version_argument if current_version is not None else None,
+            "version_argument": version_argument if "current_version" in c else None,
         },
         f"{default}, so the write was refused",
         notes,
     )
 
 
+def _ptr(v: Any) -> bool:
+    return isinstance(v, str) and (v == "" or v.startswith("/"))
+
+
+def _str_map(v: Any, keys: tuple[str, ...]) -> dict[str, str] | None:
+    if not isinstance(v, Mapping):
+        return None
+    return {k: v[k] for k in keys if isinstance(v.get(k), str)}
+
+
+def _read_item(it: Any) -> dict[str, Any] | None:
+    if not isinstance(it, Mapping) or not isinstance(it.get("index"), int) or isinstance(it.get("index"), bool):
+        return None
+    if it.get("outcome") not in _ITEM_OUTCOMES:
+        return None
+    out: dict[str, Any] = {"index": it["index"], "outcome": it["outcome"]}
+    for k in ("step", "id", "version", "message"):
+        if isinstance(it.get(k), str):
+            out[k] = it[k]
+    if isinstance(it.get("code"), str) and _CODE_RE.match(it["code"]):
+        out["code"] = it["code"]
+    return out
+
+
 def read_result(result: CallToolResult) -> dict[str, Any] | None:
-    """The ``mws`` member of a result, where it carries this shape's MAJOR version; else None.
-    (A result of another MAJOR version is read as if it carried no shape.)"""
+    """The ``mws`` member of a result, read as the draft's reader rules say; else None.
+
+    A result whose ``shape`` is not ``write-result/`` with this MAJOR version, or whose ``outcome``
+    is not one this version defines, is read as if it carried no shape (None). Members this version
+    does not define, and members whose value does not have the form it gives them, are left out of
+    what is returned: they decide nothing.
+    """
     s = structured_of(result)
     m = s.get("mws") if isinstance(s, dict) else None
-    if isinstance(m, dict) and isinstance(m.get("shape"), str) and m["shape"].startswith(f"{SHAPE_NAME}/"):
-        major = m["shape"].split("/", 1)[1].split(".", 1)[0]
-        if major == SHAPE_VERSION.split(".", 1)[0]:
-            return m
-    return None
+    if not isinstance(m, Mapping):
+        return None
+    shape = m.get("shape")
+    mt = re.fullmatch(r"write-result/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", shape) if isinstance(shape, str) else None
+    if mt is None or mt.group(1) != SHAPE_VERSION.split(".", 1)[0]:
+        return None
+    if m.get("outcome") not in _OUTCOMES:
+        return None
+    out: dict[str, Any] = {"shape": shape, "outcome": m["outcome"]}
+    if m.get("repeat") in _REPEATS:
+        out["repeat"] = m["repeat"]
+    for k in ("operation", "message", "version_argument"):
+        if isinstance(m.get(k), str):
+            out[k] = m[k]
+    if isinstance(m.get("code"), str) and _CODE_RE.match(m["code"]):
+        out["code"] = m["code"]
+    if _ptr(m.get("argument")):
+        out["argument"] = m["argument"]
+    obj = _str_map(m.get("object"), ("type", "id", "version", "scope"))
+    if obj is not None:
+        out["object"] = obj
+    ch = m.get("changed")
+    if isinstance(ch, list) and all(_ptr(c) for c in ch):
+        out["changed"] = list(ch)
+    if m.get("replayed") is True:
+        out["replayed"] = True
+    if isinstance(m.get("items"), list):
+        items = [_read_item(i) for i in m["items"]]
+        out["items"] = [i for i in items if i is not None]
+    ac = m.get("applied_count")
+    if isinstance(ac, int) and not isinstance(ac, bool) and ac >= 0:
+        out["applied_count"] = ac
+    rw = m.get("read_with")
+    if isinstance(rw, Mapping) and isinstance(rw.get("tool"), str) and rw["tool"] and isinstance(rw.get("arguments"), Mapping):
+        out["read_with"] = {"tool": rw["tool"], "arguments": dict(rw["arguments"])}
+    c = m.get("conflict")
+    if isinstance(c, Mapping):
+        cc: dict[str, Any] = {}
+        if isinstance(c.get("current_version"), str) and c["current_version"]:
+            cc["current_version"] = c["current_version"]
+        if c.get("version_source") in ("backend", "server"):
+            cc["version_source"] = c["version_source"]
+        if isinstance(c.get("current_state"), Mapping):
+            cc["current_state"] = dict(c["current_state"])
+        om = c.get("omitted")
+        if isinstance(om, list) and all(_ptr(p) for p in om):
+            cc["omitted"] = list(om)
+        if isinstance(c.get("held_by"), str):
+            cc["held_by"] = c["held_by"]
+        out["conflict"] = cc
+    return out
 
 
 def as_replay(result: CallToolResult) -> CallToolResult:

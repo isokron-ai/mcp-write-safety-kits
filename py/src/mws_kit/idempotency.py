@@ -32,7 +32,7 @@ from typing import Any, Literal, Protocol, Union, runtime_checkable
 
 from ._mcp import CallToolResult
 from .result import ReadWith, as_replay, not_applied, pointer, q, read_result
-from .unknown import RepeatGuard, classify_error, unknown_outcome
+from .unknown import RepeatGuard, classify_error, unknown_code, unknown_outcome
 
 __all__ = [
     "KeyRecord",
@@ -99,10 +99,19 @@ class InMemoryIdempotencyStore:
     Records are lost when the process stops (see the module documentation).
     """
 
-    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic, purge_every: float = 60.0) -> None:
         self._clock = clock
         self._lock = threading.Lock()
         self._records: dict[tuple[str, str], tuple[KeyRecord, float]] = {}
+        self._purge_every = purge_every
+        self._next_purge = clock() + purge_every
+
+    def _purge_locked(self, now: float) -> int:
+        dead = [k for k, (_, expires) in self._records.items() if now >= expires]
+        for k in dead:
+            del self._records[k]
+        self._next_purge = now + self._purge_every
+        return len(dead)
 
     def _live(self, k: tuple[str, str], now: float) -> KeyRecord | None:
         entry = self._records.get(k)
@@ -117,6 +126,8 @@ class InMemoryIdempotencyStore:
     def reserve(self, scope: str, key: str, fingerprint: str, ttl: float) -> KeyRecord | None:
         now = self._clock()
         with self._lock:
+            if now >= self._next_purge:  # expired records go at most this long after they expire
+                self._purge_locked(now)
             existing = self._live((scope, key), now)
             if existing is not None:
                 return existing
@@ -140,13 +151,11 @@ class InMemoryIdempotencyStore:
 
     def purge(self) -> int:
         """Drop expired records now; returns how many were dropped. (Expired records are also
-        dropped when they are next looked up.)"""
+        dropped when they are next looked up, and all of them on the first ``reserve`` after
+        ``purge_every`` seconds.)"""
         now = self._clock()
         with self._lock:
-            dead = [k for k, (_, expires) in self._records.items() if now >= expires]
-            for k in dead:
-                del self._records[k]
-            return len(dead)
+            return self._purge_locked(now)
 
     def __len__(self) -> int:
         with self._lock:
@@ -259,12 +268,18 @@ class Idempotency:
                 False,
             )
         cause = str(e) if type(e).__name__ == "OutcomeUnknownError" and str(e) else type(e).__name__
+        # The key is kept, so a repeat with it applies nothing and gets this same answer back: telling
+        # the caller to repeat with the key would never settle the outcome. The read settles it.
         return (
             unknown_outcome(
                 what,
                 read_with=read_with,
-                guard=RepeatGuard(idempotency_key=(self.key_arg, key)),
                 cause=cause,
+                code=unknown_code(e),
+                notes=[
+                    f"A repeat with the same {self.key_arg} {q(key)} applies nothing and returns this answer. If the "
+                    f"read shows that the write was not applied, send it again with a new {self.key_arg}"
+                ],
             ),
             True,
         )

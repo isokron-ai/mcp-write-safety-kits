@@ -29,7 +29,7 @@ from ._mcp import CallToolResult, ToolAnnotations
 from .result import not_applied, q
 from .schema import output_schema as _output_schema
 from .strict import check_arguments, refuse_arguments, strict_schema
-from .unknown import NotAppliedError, OutcomeUnknownError, classify_error, unknown_outcome
+from .unknown import NotAppliedError, OutcomeUnknownError, classify_error, unknown_code, unknown_outcome
 
 try:  # SDK 2.x
     from mcp.shared.exceptions import MCPError as _ProtocolError  # type: ignore[attr-defined,unused-ignore]
@@ -55,15 +55,30 @@ class ToolSpec:
     strict: bool
     read_tool: str | None
     read_arguments: dict[str, str]
+    code: Any = None  # the handler's code object, to tell an error raised inside it from the SDK's own
 
 
 def _cause_chain(e: BaseException) -> list[BaseException]:
+    # Explicit chaining only (``raise ... from ...``), as the SDK wraps a handler's error.
     out: list[BaseException] = []
     cur: BaseException | None = e
     while cur is not None and len(out) < 6:
         out.append(cur)
-        cur = cur.__cause__ or cur.__context__
+        cur = cur.__cause__
     return out
+
+
+def _raised_in(chain: list[BaseException], code: Any) -> bool:
+    """Whether any error of the chain passed through a frame running ``code`` (the handler)."""
+    if code is None:
+        return True  # unknown handler: assume it ran (the cautious reading)
+    for exc in chain:
+        tb = exc.__traceback__
+        while tb is not None:
+            if tb.tb_frame.f_code is code:
+                return True
+            tb = tb.tb_next
+    return False
 
 
 class WriteSafety:
@@ -133,7 +148,8 @@ class WriteSafety:
             tool.parameters = schema
         if output is not False:
             self._set_output_schema(tool, _output_schema(None if output is True else output))  # type: ignore[arg-type]
-        self.specs[tool_name] = ToolSpec(tool_name, kind, schema, self.strict, read_tool, dict(read_arguments or {}))
+        code = getattr(inspect.unwrap(fn), "__code__", None)
+        self.specs[tool_name] = ToolSpec(tool_name, kind, schema, self.strict, read_tool, dict(read_arguments or {}), code)
 
     @staticmethod
     def _set_output_schema(tool: Any, schema: dict[str, Any]) -> None:
@@ -262,19 +278,21 @@ class WriteSafety:
 
     def _write_failure(self, spec: ToolSpec, e: BaseException, arguments: Mapping[str, Any]) -> CallToolResult:
         chain = _cause_chain(e)
-        if any(type(c).__name__ == "ValidationError" for c in chain):
-            # The SDK's own validation refused the arguments before the handler ran.
+        if any(type(c).__name__ == "ValidationError" for c in chain) and not _raised_in(chain, spec.code):
+            # The SDK's own validation refused the arguments before the handler ran. A ValidationError
+            # raised inside the handler (say, while parsing the backend's answer) is not a refusal:
+            # the write may have been made, so it falls through to the unknown outcome below.
             return not_applied(
                 f"the arguments of {q(spec.name)} were refused",
                 code="invalid_argument",
                 message=str(e).splitlines()[0],
             )
-        root = chain[-1] if len(chain) > 1 else e
+        root = chain[-1]
         for c in chain:
             if isinstance(c, (NotAppliedError, OutcomeUnknownError)):
                 root = c
                 break
-        if classify_error(root) == "not_applied":
+        if classify_error(e) == "not_applied":
             if isinstance(root, NotAppliedError):
                 return not_applied(str(root), code=root.code, message=str(root))
             return not_applied(
@@ -284,12 +302,11 @@ class WriteSafety:
             )
         rargs = {k: arguments[v] for k, v in spec.read_arguments.items() if v in arguments}
         return unknown_outcome(
-            f"{q(spec.name)} stopped with an internal error after it may have written",
+            f"{q(spec.name)} stopped with an error after it may have written",
             read_with={"tool": spec.read_tool or spec.name, "arguments": rargs},
-            code="no_answer" if isinstance(root, (OutcomeUnknownError, TimeoutError, ConnectionError)) else "internal_error",
+            code=unknown_code(e),
             cause=str(root) if isinstance(root, OutcomeUnknownError) and str(root) else type(root).__name__,
         )
-
 
 try:
     from pydantic import BaseModel, ConfigDict

@@ -21,6 +21,11 @@ process (Annex B-4), so two calls through this process cannot interleave between
 the write, but a writer that reaches the backend another way, or a second server process, can. Where
 that is possible and the backend cannot check the version, say so in the tool's description
 (MWS-CONC-5, Annex B-8).
+
+Use one guard either from sync code (:meth:`VersionGuard.apply`) or from async code
+(:meth:`VersionGuard.apply_async`), not both: the async form holds the per-object lock across
+awaits, and a sync call for the same object made on the event loop's thread (as SDK 1.x does for
+sync tools) would block the loop while waiting for it.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from typing import Any, Generic, TypeVar, cast
 
 from ._mcp import CallToolResult
 from .result import applied, conflict, not_applied, pointer, q
-from .unknown import NotAppliedError, OutcomeUnknownError, RepeatGuard, classify_error, unknown_outcome
+from .unknown import NotAppliedError, OutcomeUnknownError, RepeatGuard, classify_error, unknown_code, unknown_outcome
 
 __all__ = ["Snapshot", "VersionConflict", "VersionGuard", "changed_fields"]
 
@@ -136,17 +141,38 @@ class VersionGuard(Generic[C]):
     object_type: str | None = None
     id_argument: str = "id"
     data_key: str | None = None
-    _locks: dict[Any, threading.Lock] = field(default_factory=dict, init=False, repr=False)
+    _locks: dict[Any, list[Any]] = field(default_factory=dict, init=False, repr=False)
     _locks_guard: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     # -- locking --------------------------------------------------------------------------------
 
     def _lock_for(self, id: Id) -> threading.Lock:  # noqa: A002
+        # [lock, users]: the entry lives while a call holds or waits for the lock, so the table does
+        # not grow with every id ever written.
         with self._locks_guard:
-            lock = self._locks.get(id)
-            if lock is None:
-                lock = self._locks[id] = threading.Lock()
-            return lock
+            entry = self._locks.get(id)
+            if entry is None:
+                entry = self._locks[id] = [threading.Lock(), 0]
+            entry[1] += 1
+            return cast(threading.Lock, entry[0])
+
+    def _done_with(self, id: Id, lock: threading.Lock) -> None:  # noqa: A002
+        with self._locks_guard:
+            lock.release()
+            entry = self._locks.get(id)
+            if entry is not None:
+                entry[1] -= 1
+                if entry[1] <= 0:
+                    del self._locks[id]
+
+    def _forget(self, id: Id) -> None:  # noqa: A002
+        # A waiter that was cancelled before it got the lock.
+        with self._locks_guard:
+            entry = self._locks.get(id)
+            if entry is not None:
+                entry[1] -= 1
+                if entry[1] <= 0 and not entry[0].locked():
+                    del self._locks[id]
 
     async def _acquire_async(self, lock: threading.Lock) -> None:
         # A threading lock, polled without blocking the event loop, so that sync and async callers
@@ -229,8 +255,14 @@ class VersionGuard(Generic[C]):
                 object=self._obj(id),
                 operation=operation,
             )
+        code = unknown_code(e)
+        summary = (
+            f"the {what} of {self.noun} {q(id)} was sent and no answer arrived"
+            if code == "no_answer"
+            else f"the {what} of {self.noun} {q(id)} stopped with an error after it may have been sent"
+        )
         return unknown_outcome(
-            f"the {what} of {self.noun} {q(id)} was sent and no answer arrived",
+            summary,
             read_with=self._read_with(id),
             object={"type": self.object_type, "id": id},
             operation=operation,
@@ -238,6 +270,7 @@ class VersionGuard(Generic[C]):
             # provided the backend changes the version on every write it applies.
             guard=RepeatGuard(version=(self.version_arg, expected)) if expected is not None else None,
             cause=(str(e) or None) if isinstance(e, OutcomeUnknownError) else type(e).__name__,
+            code=code,
         )
 
     # -- sync -----------------------------------------------------------------------------------
@@ -248,7 +281,9 @@ class VersionGuard(Generic[C]):
             raise TypeError("read or write is async; use apply_async")
         if expected_version is None and self.require_version:
             return self._version_required(id, operation)
-        with self._lock_for(id):
+        lock = self._lock_for(id)
+        lock.acquire()
+        try:
             current = cast("Snapshot | None", self.read(id))
             if current is None:
                 return self._missing(id, operation)
@@ -262,6 +297,8 @@ class VersionGuard(Generic[C]):
             except Exception as e:  # noqa: BLE001
                 return self._error(id, e, expected_version, what, operation)
             return self._receipt(id, current, after, verb, operation)
+        finally:
+            self._done_with(id, lock)
 
     def delete(self, id: Id, expected_version: Version | None) -> CallToolResult:  # noqa: A002
         """Compare, then delete (``write`` receives ``change=None`` and returns None)."""
@@ -274,7 +311,11 @@ class VersionGuard(Generic[C]):
         if expected_version is None and self.require_version:
             return self._version_required(id, operation)
         lock = self._lock_for(id)
-        await self._acquire_async(lock)
+        try:
+            await self._acquire_async(lock)
+        except BaseException:
+            self._forget(id)
+            raise
         try:
             current = await _maybe(self.read(id))
             if current is None:
@@ -290,7 +331,7 @@ class VersionGuard(Generic[C]):
                 return self._error(id, e, expected_version, what, operation)
             return self._receipt(id, current, after, verb, operation)
         finally:
-            lock.release()
+            self._done_with(id, lock)
 
     async def delete_async(self, id: Id, expected_version: Version | None) -> CallToolResult:  # noqa: A002
         """The async form of :meth:`delete`."""

@@ -26,6 +26,7 @@ __all__ = [
     "OutcomeUnknownError",
     "ErrorClass",
     "classify_error",
+    "unknown_code",
     "unknown_outcome",
     "guard_write",
     "guard_write_async",
@@ -86,6 +87,48 @@ _NOT_SENT_NAMES = {
 }
 
 
+# Errors that mean the request may have been sent and its answer was lost.
+_LOST_ANSWER_NAMES = {
+    # httpx / httpcore
+    "ReadTimeout",
+    "WriteTimeout",
+    "PoolTimeout",
+    "ReadError",
+    "WriteError",
+    "RemoteProtocolError",
+    # aiohttp
+    "ServerDisconnectedError",
+    "ServerTimeoutError",
+    "ClientPayloadError",
+    # requests / urllib3
+    "ReadTimeoutError",
+    "ProtocolError",
+}
+
+
+def _is_lost_answer(e: BaseException) -> bool:
+    if isinstance(e, OutcomeUnknownError):
+        return True
+    if isinstance(e, (TimeoutError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+        return True
+    return any(c.__name__ in _LOST_ANSWER_NAMES for c in type(e).__mro__)
+
+
+def unknown_code(e: BaseException) -> str:
+    """The ``code`` for an unknown outcome caused by ``e``: ``"no_answer"`` (fixed by the draft:
+    a request was sent and no answer arrived) only where the error says so (a timeout, a reset or
+    closed connection, :class:`OutcomeUnknownError`), anywhere in its ``__cause__`` chain;
+    otherwise ``"internal_error"`` (a server code: the handler failed after it may have written)."""
+    cur: BaseException | None = e
+    for _ in range(6):
+        if cur is None:
+            break
+        if _is_lost_answer(cur):
+            return "no_answer"
+        cur = cur.__cause__
+    return "internal_error"
+
+
 def classify_error(e: BaseException) -> ErrorClass:
     """How an error raised while sending a write bears on it.
 
@@ -96,6 +139,11 @@ def classify_error(e: BaseException) -> ErrorClass:
     ``"unknown"``: the request may have been sent and no answer arrived (a read timeout, a reset
     connection), or the error is not recognised. This is the cautious reading: never report
     "failed" when unsure.
+
+    The chain is followed through ``__cause__`` only (``raise ... from ...``), outermost first, and
+    stops at the first error that says the answer was lost. ``__context__`` (an error raised while
+    another was being handled) is not followed: a timeout raised during the handling of a refused
+    connection, as in a fallback or an internal retry, is a request that may have been sent.
     """
     cur: BaseException | None = e
     for _ in range(5):
@@ -111,7 +159,9 @@ def classify_error(e: BaseException) -> ErrorClass:
             return "not_applied"
         if any(c.__name__ in _NOT_SENT_NAMES for c in type(cur).__mro__):
             return "not_applied"
-        cur = cur.__cause__ or cur.__context__
+        if _is_lost_answer(cur):
+            return "unknown"
+        cur = cur.__cause__
     return "unknown"
 
 
@@ -184,7 +234,7 @@ def _from_error(
         cause: str | None = str(e) or None
     else:
         cause = type(e).__name__
-    return unknown_outcome(what, read_with=read_with, object=object, guard=guard, cause=cause)
+    return unknown_outcome(what, read_with=read_with, object=object, guard=guard, cause=cause, code=unknown_code(e))
 
 
 def guard_write(

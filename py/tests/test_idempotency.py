@@ -96,7 +96,7 @@ def test_unknown_outcome_is_kept_and_a_repeat_applies_nothing():
 
     first = idem.run(scope="s", key="k", arguments={"x": 1}, write=lost, read_with=RW)
     assert structured_of(first)["outcome"] == "unknown"
-    assert structured_of(first)["repeat"] == "same_key"
+    assert structured_of(first)["repeat"] == "read_first"
     again = idem.run(scope="s", key="k", arguments={"x": 1}, write=lost, read_with=RW)
     assert len(calls) == 1
     assert structured_of(again)["outcome"] == "unknown" and structured_of(again)["replayed"] is True
@@ -122,7 +122,7 @@ def test_partial_result_is_kept():
 
     def half():
         calls.append(1)
-        return k.partial("x", items=[k.item(0, "applied", id=1), k.item(1, "not_applied", id=2)])
+        return k.partial("x", items=[k.item(0, "applied", id=1), k.item(1, "not_applied", id=2)], read_with=RW)
 
     idem.run(scope="s", key="k", arguments={}, write=half, read_with=RW)
     idem.run(scope="s", key="k", arguments={}, write=half, read_with=RW)
