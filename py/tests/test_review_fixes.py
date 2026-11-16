@@ -286,3 +286,74 @@ def test_pattern_dot_and_whitespace_follow_ecma():
     schema = k.strict_schema({"type": "object", "properties": {"s": {"type": "string", "pattern": "^.+$"}, "w": {"type": "string", "pattern": "^\\s$"}}})
     assert k.check_arguments(schema, {"s": "a\rb"})
     assert k.check_arguments(schema, {"s": "ab", "w": " "}) == []
+
+
+# -- the third review: a raised refusal names the read; chained refusals keep their code ------------
+
+
+def _conflict_refusal() -> None:
+    raise k.NotAppliedError('note "n-1" changed since version 2', code="conflict")
+
+
+def test_raised_conflict_refusal_names_the_read():
+    r = k.guard_write(_conflict_refusal, read_with=RW, what="the update")
+    m = structured_of(r)["mws"]
+    assert (m["outcome"], m["code"], m["repeat"]) == ("not_applied", "conflict", "read_first")
+    assert m["read_with"] == RW
+    assert 'read it with "get_note"' in r.content[0].text
+
+
+def test_raised_refusal_with_an_open_code_is_unknown():
+    def write() -> None:
+        raise k.NotAppliedError("the backend answered 503", code="backend_error")
+
+    m = structured_of(k.guard_write(write, read_with=RW, what="the update"))["mws"]
+    assert (m["outcome"], m["code"], m["repeat"]) == ("unknown", "backend_error", "read_first")
+
+
+def test_chained_refusal_keeps_its_code():
+    def write() -> None:
+        try:
+            raise k.NotAppliedError('note "n-1" is locked', code="locked")
+        except k.NotAppliedError as e:
+            raise RuntimeError("wrapped") from e
+
+    m = structured_of(k.guard_write(write, read_with=RW, what="the update"))["mws"]
+    assert (m["outcome"], m["code"], m["repeat"]) == ("not_applied", "locked", "no")
+
+
+def test_idempotency_releases_the_key_on_a_conflict_refusal():
+    idem = k.Idempotency()
+    r = idem.run(scope="s", key="k-1", arguments={}, write=_conflict_refusal, read_with=RW)
+    m = structured_of(r)["mws"]
+    assert (m["outcome"], m["code"], m["repeat"]) == ("not_applied", "conflict", "read_first")
+    again = idem.run(scope="s", key="k-1", arguments={}, write=lambda: k.applied("wrote"), read_with=RW)
+    assert structured_of(again)["mws"]["outcome"] == "applied"
+
+
+def test_write_tool_conflict_refusal_through_the_server():
+    server = FastMCP("t")
+    kit = k.WriteSafety(server)
+
+    @kit.read_tool(open_world=False)
+    def get_note(id: str) -> CallToolResult:  # noqa: A002
+        return k.read_answer({"id": id})
+
+    @kit.write_tool(read_tool="get_note", read_arguments={"id": "id"})
+    def save(id: str) -> CallToolResult:  # noqa: A002
+        raise k.NotAppliedError(f"note {k.q(id)} changed since version 2", code="conflict")
+
+    r = run(call(server, "save", {"id": "a"}))
+    assert r.shape["read_with"] == {"tool": "get_note", "arguments": {"id": "a"}}
+    if r.shape["outcome"] == "unknown":
+        # SDK 2.x: the middleware sees only the SDK's text for an escaped exception, never its cause,
+        # so it says the outcome is unknown (the README asks handlers to return results instead).
+        assert r.shape["code"] == "internal_error" and r.shape["repeat"] == "read_first"
+    else:
+        assert r.shape["outcome"] == "not_applied" and r.shape["code"] == "conflict" and r.shape["repeat"] == "read_first"
+
+
+def test_conflict_without_state_says_only_the_version():
+    r = k.conflict("n-1", read_tool="get_note", current_version=4, checked_by="server")
+    assert "Its current version is in the JSON below." in r.content[0].text
+    assert "current state" not in r.content[0].text

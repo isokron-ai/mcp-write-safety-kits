@@ -54,6 +54,7 @@ from .unknown import (
     guard_write,
     guard_write_async,
     unknown_outcome,
+    refusal_result,
 )
 from .version import Snapshot, VersionConflict, VersionGuard, changed_fields
 
@@ -68,7 +69,7 @@ __all__ = [
     "as_replay", "q",
     "output_schema",
     # unknown outcomes
-    "unknown_outcome", "guard_write", "guard_write_async", "classify_error", "unknown_code", "RepeatGuard",
+    "unknown_outcome", "refusal_result", "guard_write", "guard_write_async", "classify_error", "unknown_code", "RepeatGuard",
     "NotAppliedError", "OutcomeUnknownError",
     # version check
     "VersionGuard", "Snapshot", "VersionConflict", "changed_fields",

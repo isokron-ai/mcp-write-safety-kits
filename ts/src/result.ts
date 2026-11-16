@@ -181,7 +181,7 @@ export function assertShape(r: WriteResult): void {
   for (const v of [r.object?.id, r.object?.version, r.object?.parent?.id, r.object?.parent?.version, r.conflict?.current_version]) {
     if (v !== undefined && !isIdv(v)) fail(`${q(v)} is not an identifier or version (a string, or an integer within 2^53-1)`);
   }
-  if (r.repeat === "read_first" && !r.read_with && !r.object?.id) {
+  if (r.repeat === "read_first" && !r.read_with && r.object?.id === undefined) {
     fail(`repeat "read_first" names a read only with read_with or object.id: give readWith`);
   }
   if (r.object?.scope !== undefined && typeof r.object.scope !== "string") fail("object.scope must be a string");
@@ -275,7 +275,10 @@ export function renderText(r: WriteResult, o: TextOptions): string {
       lines.push(sentence(head));
   }
   if (r.replayed) lines.push("Replay: this call repeats an earlier call with the same idempotency key and applied nothing itself; the answer describes the earlier call's write.");
-  if (r.conflict && (r.conflict.current_state || r.conflict.current_version !== undefined)) lines.push("Its current state and version are in the JSON below.");
+  if (r.conflict) {
+    const st = r.conflict.current_state !== undefined, ver = r.conflict.current_version !== undefined;
+    if (st || ver) lines.push(`Its current ${st && ver ? "state and version are" : st ? "state is" : "version is"} in the JSON below.`);
+  }
   if (r.changed) lines.push(`Changed: ${r.changed.length ? r.changed.map(q).join(", ") : "nothing"}.`);
   if (r.object?.version !== undefined && r.outcome !== "not_applied") lines.push(`Version now: ${q(r.object.version)}.`);
   const read = readSentence(r);
@@ -311,7 +314,9 @@ function failClosed(r: WriteResult, why: string): CallToolResult {
   const rw = r.read_with && typeof r.read_with.tool === "string" && typeof r.read_with.arguments === "object" && r.read_with.arguments !== null && !Array.isArray(r.read_with.arguments) ? r.read_with : undefined;
   const object = r.object && isIdv(r.object.id) ? clean({ type: typeof r.object.type === "string" ? r.object.type : undefined, id: r.object.id }) : undefined;
   const shape: WriteResult = clean({
-    shape: SHAPE, outcome: "unknown" as const, repeat: "read_first" as const, code: "internal_error",
+    // read_first only where a read can be named (read_with or object.id); otherwise "no", which B-9
+    // allows with any outcome: read_first naming no read is read as "yes" (B-9, How a tester uses it).
+    shape: SHAPE, outcome: "unknown" as const, repeat: rw || object ? ("read_first" as const) : ("no" as const), code: "internal_error",
     message: `The server built a malformed result (${why}); the write may or may not have been applied.`,
     object, read_with: rw,
   });
@@ -324,6 +329,28 @@ function failClosed(r: WriteResult, why: string): CallToolResult {
     structuredContent: structured,
     isError: true,
   };
+}
+
+/**
+ * Checks a result a write handler returned (B-9: a server checks each result before it returns it).
+ * A result whose `mws` breaks a rule, or a success without `mws` from a tool that declares the shape
+ * in its outputSchema (`shaped`), is replaced by an `internal_error` result naming `readWith`; any
+ * other result is returned as it is.
+ */
+export function checkResult(result: CallToolResult, o: { readWith?: ReadWith; shaped?: boolean } = {}): CallToolResult {
+  const sc = result.structuredContent;
+  const m = typeof sc === "object" && sc !== null && !Array.isArray(sc) ? (sc as Record<string, unknown>)["mws"] : undefined;
+  if (m === undefined) {
+    if (!o.shaped || result.isError) return result;
+    return failClosed({ shape: SHAPE, outcome: "unknown", read_with: o.readWith }, "the result did not carry write-result/0.1");
+  }
+  try {
+    assertShape(m as WriteResult);
+    return result;
+  } catch (e) {
+    const w = (typeof m === "object" && m !== null ? m : {}) as WriteResult;
+    return failClosed({ ...w, read_with: w.read_with ?? o.readWith }, (e as Error).message);
+  }
 }
 
 /**

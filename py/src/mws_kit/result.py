@@ -292,7 +292,9 @@ def render_text(
         lines.append(REPLAY_NOTE)
     c = m.get("conflict")
     if c and ("current_state" in c or "current_version" in c):
-        lines.append("Its current state and version are in the JSON below.")
+        st, ver = "current_state" in c, "current_version" in c
+        what = "state and version are" if st and ver else "state is" if st else "version is"
+        lines.append(f"Its current {what} in the JSON below.")
     if "changed" in m:
         ch = m["changed"]
         lines.append(f"Changed: {', '.join(q(x) for x in ch) if ch else 'nothing'}.")
@@ -457,7 +459,7 @@ def assert_shape(structured: Mapping[str, Any]) -> None:
     if rw is not None and not (isinstance(rw, Mapping) and isinstance(rw.get("tool"), str) and rw["tool"]
                                and isinstance(rw.get("arguments"), Mapping)):
         fail("mws.read_with is {tool, arguments}")
-    if rep == "read_first" and rw is None and not (isinstance(obj, Mapping) and obj.get("id")):
+    if rep == "read_first" and rw is None and not (isinstance(obj, Mapping) and obj.get("id") is not None):
         fail('repeat "read_first" names a read only with read_with or object.id; give read_with')
     if "replayed" in m and m["replayed"] is not True:
         fail("mws.replayed is true or left out")

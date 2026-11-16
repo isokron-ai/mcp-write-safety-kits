@@ -191,7 +191,7 @@ The validator supports a fixed subset of JSON Schema (`SUPPORTED_KEYWORDS`). A s
 
 ### Unknown outcomes
 
-`unknownOutcome(options)`, `guardWrite(write, options)`, `classifyError`, `NotAppliedError`, `OutcomeUnknownError`: MWS-RES-2.
+`unknownOutcome(options)`, `guardWrite(write, options)`, `refusalResult`, `classifyError`, `NotAppliedError`, `OutcomeUnknownError`: MWS-RES-2. `defineTool` also checks what a write handler returns (`checkResult`): a result that breaks a rule of the shape, or a success without the shape from a tool whose `outputSchema` requires `mws`, becomes an `internal_error` result.
 
 When the backend's answer is lost (a timeout, a closed or reset connection), the server does not know whether the write was applied. Saying that it failed invites a duplicate; saying that it succeeded may be false. `unknownOutcome` returns a tool execution error with `outcome: "unknown"` that:
 
@@ -199,7 +199,7 @@ When the backend's answer is lost (a timeout, a closed or reset connection), the
 - has a code (default `no_answer`; `guardWrite` gives `internal_error` where the error does not show a lost answer, and an abort is not one; `backend_error` where you pass it) and names the read that settles it (`read_with`, required);
 - sets `repeat` to `same_key` or `same_version` where the call carried an idempotency key or a version that guards the repeat (`guard`), and otherwise to `read_first`. Never `yes`. MWS-RES-2 forbids telling the caller to repeat a write whose outcome is open on any other terms.
 
-`guardWrite` runs a write and turns a thrown error into a truthful result: a `NotAppliedError`, or a request that was never sent (connection refused, name not resolved), becomes `not_applied` (the latter with `code: "not_sent"` and `repeat: "yes"`); a lost answer (a reset or closed connection, a timeout) becomes `unknown` with `no_answer`; anything else, including a crash in the server's own code, becomes `unknown` with `internal_error`. The raw error message is never copied into the result, because a client error can carry a URL with a token (MWS-SEC-1). Report an outcome the server has established as what it is: an answer the backend gave is a settled outcome, and MWS-RES-2 forbids reporting it as unknown.
+`guardWrite` runs a write and turns a thrown error into a truthful result: a `NotAppliedError`, or a request that was never sent (connection refused, name not resolved), becomes `not_applied` (the latter with `code: "not_sent"` and `repeat: "yes"`); a `NotAppliedError` names the read, with `repeat: "read_first"` for `code: "conflict"`, and one whose code B-9 reserves for an open outcome (`backend_error`, say) becomes `unknown` with that code (`refusalResult`); a lost answer (a reset or closed connection, a timeout) becomes `unknown` with `no_answer`; anything else, including a crash in the server's own code, becomes `unknown` with `internal_error`. The raw error message is never copied into the result, because a client error can carry a URL with a token (MWS-SEC-1). Report an outcome the server has established as what it is: an answer the backend gave is a settled outcome, and MWS-RES-2 forbids reporting it as unknown.
 
 ### Annotations
 

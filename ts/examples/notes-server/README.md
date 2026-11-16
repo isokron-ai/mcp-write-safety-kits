@@ -40,7 +40,7 @@ Every write result carries the write-result/0.1 shape (MWS 0.9, Annex B, B-9) in
 
 ### Results of one run
 
-mcp-writecheck at commit f573a24 (0.1.0-dev.0, MWS 0.9, pinned to the spec text with B-9 v2), run `aa7a73f730`, plan `d5ef93741f7695e4`, 16 November 2026 (UTC), against the build that follows the approved B-9 text (integer versions, 13 reserved codes, keyed repeats) with the safe conflict default. Its verdicts match the earlier run at e613620 (`c8f24752f9`) on every requirement. One row per requirement; the write paths for each verdict are in brackets. There is no total: `not tested` and `not applicable` rows make any count meaningless (spec 5.2). No record is `violated`.
+mcp-writecheck at commit f573a24 (0.1.0-dev.0, MWS 0.9, pinned to the spec text with B-9 v2), run `8f30c846fd`, plan `d5ef93741f7695e4`, 16 November 2026 (UTC), against the build that follows the approved B-9 text (integer versions, 13 reserved codes, keyed repeats) with the safe conflict default. Its verdicts match the earlier run at e613620 (`c8f24752f9`) on every requirement. One row per requirement; the write paths for each verdict are in brackets. There is no total: `not tested` and `not applicable` rows make any count meaningless (spec 5.2). No record is `violated`.
 
 | Requirement | Level | Verdicts (write paths) |
 |---|---|---|

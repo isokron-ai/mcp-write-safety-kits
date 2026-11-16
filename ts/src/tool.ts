@@ -4,7 +4,7 @@
 
 import { readOnlyHints, writeHints, type ExplicitAnnotations, type ReadToolHints, type WriteToolHints } from "./annotations.js";
 import { guardWrite } from "./outcome.js";
-import { notApplied, q, type ReadWith } from "./result.js";
+import { checkResult, notApplied, q, type ReadWith } from "./result.js";
 import { strictInput, type JsonSchema } from "./strict-input.js";
 import type { CallToolResult, MaybePromise, Tool } from "./types.js";
 
@@ -52,6 +52,12 @@ export interface DefinedTool {
 }
 
 /** Defines a tool. Throws SchemaError when the input schema uses a keyword the validator does not enforce. */
+/** True where an outputSchema requires the member mws (as outputSchemaFor's does). */
+function requiresMws(schema: Record<string, unknown> | undefined): boolean {
+  const req = schema?.["required"];
+  return Array.isArray(req) && req.includes("mws");
+}
+
 export function defineTool<A = Record<string, unknown>>(spec: ToolSpec<A>): DefinedTool {
   const input = strictInput(spec.inputSchema, { versionArgument: spec.kind === "write" ? spec.versionArgument : undefined });
   const annotations = spec.kind === "read" ? readOnlyHints(spec.hints) : writeHints(spec.hints);
@@ -71,7 +77,9 @@ export function defineTool<A = Record<string, unknown>>(spec: ToolSpec<A>): Defi
       if (!v.ok) return v.result;
       const run = async () => spec.handler(v.value as A, extra);
       if (spec.kind === "write") {
-        return guardWrite(run, { readWith: spec.readWith(v.value as A), what: `the call to ${q(spec.name)}` });
+        const readWith = spec.readWith(v.value as A);
+        // The handler's own result is checked too, not only what the kit's builders made.
+        return checkResult(await guardWrite(run, { readWith, what: `the call to ${q(spec.name)}` }), { readWith, shaped: requiresMws(spec.outputSchema) });
       }
       try {
         return await run();

@@ -23,12 +23,12 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { q, readResult, toToolResult, notApplied, type ReadWith, type Repeat, type WriteResult } from "./result.js";
-import { classifyError, unknownCode, unknownOutcome } from "./outcome.js";
+import { NotAppliedError, classifyError, refusalIsOpen, refusalResult, unknownCode, unknownOutcome } from "./outcome.js";
 import type { CallToolResult } from "./types.js";
 
 /** The state of a key, as `begin` finds it. */
 export type BeginResult =
-  /** No record: the caller may run the write. `token` must be passed to complete, release or markUnknown. */
+  /** No record: the caller may run the write. `token` must be passed to complete or release. */
   | { status: "new"; token: string }
   /** An earlier write with the same arguments: its first answer (applied, accepted, partial or unknown). */
   | { status: "replay"; result: CallToolResult }
@@ -254,6 +254,12 @@ export async function withIdempotency(o: IdempotencyOptions, write: () => Promis
           result = await write();
         } catch (e) {
           const k = classifyError(e);
+          if (k === "refused" && refusalIsOpen(e as NotAppliedError)) {
+            // A refusal whose code B-9 reserves for an open outcome: the key is kept, as for any open answer.
+            result = keyedAnswer(refusalResult(e as NotAppliedError, { readWith: o.readWith }), text);
+            await o.store.complete(o.scope, key, b.token, result);
+            return result;
+          }
           // A refusal, or a request that was never sent, applied nothing: the key is free again.
           if (k === "refused" || k === "not_sent") {
             await o.store.release(o.scope, key, b.token);

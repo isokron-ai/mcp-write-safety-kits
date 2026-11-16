@@ -44,7 +44,7 @@ from typing import Any, Generic, TypeVar, cast
 
 from ._mcp import CallToolResult
 from .result import applied, conflict, not_applied, pointer, q
-from .unknown import NotAppliedError, OutcomeUnknownError, RepeatGuard, classify_error, unknown_code, unknown_outcome
+from .unknown import NotAppliedError, OutcomeUnknownError, RepeatGuard, classify_error, refusal_result, unknown_code, unknown_outcome
 
 __all__ = ["Snapshot", "VersionConflict", "VersionGuard", "changed_fields"]
 
@@ -264,16 +264,15 @@ class VersionGuard(Generic[C]):
         )
 
     def _error(self, id: Id, e: BaseException, expected: Version | None, what: str, operation: str) -> CallToolResult:  # noqa: A002
-        if classify_error(e) == "not_applied":
-            if isinstance(e, NotAppliedError):
-                return not_applied(str(e), code=e.code, message=str(e), object=self._obj(id), operation=operation)
-            return not_applied(
-                "the backend could not be reached, so the request was not sent",
-                code="not_sent",
-                message="the connection to the backend could not be made",
-                object=self._obj(id),
-                operation=operation,
-            )
+        refused = refusal_result(
+            e,
+            read_with=self._read_with(id),
+            object={"type": self.object_type, "id": id},
+            operation=operation,
+            guard=RepeatGuard(version=(self.version_arg, expected)) if expected is not None else None,
+        )
+        if refused is not None:
+            return refused
         code = unknown_code(e)
         summary = (
             f"the {what} of {self.noun} {q(id)} was sent and no answer arrived"

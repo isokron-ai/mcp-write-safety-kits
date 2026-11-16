@@ -258,7 +258,10 @@ applied, not applied or not attempted; never a success when not complete).
 that settles it, and sets `repeat` to `read_first`, or to `same_key` / `same_version` where the call
 carried a key or version that guards a repeat. `guard_write` and `guard_write_async` run a write and
 map what it raises: `NotAppliedError` and an unsent request (connection refused, name not resolved,
-connect errors of httpx, aiohttp and urllib3) become `not_applied`; anything else becomes `unknown`,
+connect errors of httpx, aiohttp and urllib3) become `not_applied`. A `NotAppliedError`, also one
+chained under another error with `raise ... from`, keeps its code and names the read, with
+`repeat: "read_first"` for `code="conflict"`; one whose code B-9 reserves for an open outcome
+(`backend_error`, say) becomes `unknown` with that code (`refusal_result`). Anything else becomes `unknown`,
 with `code: "no_answer"` where the error says an answer was lost (a timeout, a reset connection,
 `OutcomeUnknownError`) and `code: "internal_error"` for any other error. Only an explicit cause
 (`raise ... from ...`) is followed: an error raised while another was being handled is classified

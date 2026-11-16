@@ -32,7 +32,7 @@ from typing import Any, Literal, Protocol, Union, runtime_checkable
 
 from ._mcp import CallToolResult
 from .result import ReadWith, as_replay, not_applied, pointer, q, read_result, restate
-from .unknown import RepeatGuard, classify_error, unknown_code, unknown_outcome
+from .unknown import RepeatGuard, classify_error, refusal_result, unknown_code, unknown_outcome
 
 __all__ = [
     "KeyRecord",
@@ -169,6 +169,9 @@ def fingerprint(arguments: Mapping[str, Any], *, exclude: tuple[str, ...] = ()) 
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+_DEFAULT_WHAT = "the write was sent and no answer arrived"
+
+
 def _dump(result: CallToolResult) -> dict[str, Any]:
     return result.model_dump(by_alias=True, mode="json", exclude_none=True)
 
@@ -266,31 +269,30 @@ class Idempotency:
             f"a call with the same {self.key_arg} {q(key)} is still in progress, and this call applied nothing",
             read_with=read_with,
             code="in_progress",
+            replayed=True,
             guard=RepeatGuard(idempotency_key=(self.key_arg, key)),
         )
 
     def _after_exception(self, key: str, e: BaseException, read_with: ReadWith | Mapping[str, Any], what: str) -> tuple[CallToolResult, bool]:
         """The result for an exception raised by the write, and whether to keep the key."""
-        if isinstance(e, Exception) and classify_error(e) == "not_applied":
-            if type(e).__name__ == "NotAppliedError":
-                return not_applied(str(e), code=getattr(e, "code", None), message=str(e)), False
-            return (
-                not_applied(
-                    "the backend could not be reached, so the request was not sent",
-                    code="not_sent",
-                    message="the connection to the backend could not be made",
-                ),
-                False,
-            )
+        refused = refusal_result(e, read_with=read_with) if isinstance(e, Exception) else None
+        if refused is not None:
+            # A settled refusal releases the key; a code that implies an open outcome keeps it.
+            if (read_result(refused) or {}).get("outcome") == "not_applied":
+                return refused, False
+            return restate(refused, {}, notes=[self._open_note(key)]), True
         cause = str(e) if type(e).__name__ == "OutcomeUnknownError" and str(e) else type(e).__name__
         # The key is kept, so a repeat with it applies nothing and gets this same answer back: telling
         # the caller to repeat with the key would never settle the outcome. The read settles it.
+        code = unknown_code(e)
+        if code != "no_answer" and what == _DEFAULT_WHAT:
+            what = "the write stopped on a fault in the server after it may have been sent"
         return (
             unknown_outcome(
                 what,
                 read_with=read_with,
                 cause=cause,
-                code=unknown_code(e),
+                code=code,
                 notes=[
                     f"A repeat with the same {self.key_arg} {q(key)} applies nothing and returns this answer. If the "
                     f"read shows that the write was not applied, send it again with a new {self.key_arg}"
@@ -305,6 +307,7 @@ class Idempotency:
             "call applied nothing",
             read_with=read_with,
             code="key_not_known",
+            replayed=True,
             notes=["An earlier call with this key may have been applied before a restart"],
         )
 
@@ -355,7 +358,7 @@ class Idempotency:
         arguments: Mapping[str, Any],
         write: Callable[[], CallToolResult],
         read_with: ReadWith | Mapping[str, Any],
-        what: str = "the write was sent and no answer arrived",
+        what: str = _DEFAULT_WHAT,
     ) -> CallToolResult:
         """Run ``write`` at most once for ``key`` (no key: just run it).
 
@@ -411,7 +414,7 @@ class Idempotency:
         arguments: Mapping[str, Any],
         write: Callable[[], Awaitable[CallToolResult] | CallToolResult],
         read_with: ReadWith | Mapping[str, Any],
-        what: str = "the write was sent and no answer arrived",
+        what: str = _DEFAULT_WHAT,
     ) -> CallToolResult:
         """The async form of :meth:`run`; ``write`` and the store may be sync or async."""
         if key is None:

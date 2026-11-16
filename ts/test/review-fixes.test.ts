@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
   applied, accepted, notApplied, itemsResult, conflict, guardWrite, unknownCode, OutcomeUnknownError,
   MemoryIdempotencyStore, withIdempotency, strictInput, validateArguments, SchemaError, q, type CallToolResult,
+  NotAppliedError, classifyError, defineTool, outputSchemaFor,
 } from "../src/index.js";
 
 const RW = { tool: "get_note", arguments: { id: "n-1" } };
@@ -122,4 +123,54 @@ test("schema keyword values are checked at definition time; untyped values stay 
   assert.equal(s.validate({ any: { nested: 1 } }).ok, true);
   assert.equal(s.validate({ other: 1 }).ok, false);
   assert.equal(validateArguments({ type: "object", properties: { a: { type: "string" } } }, { b: 1 }).length, 1, "a raw schema is closed as advertised");
+});
+
+// -- the third review: a thrown refusal names the read; nothing fails closed into a read it cannot name
+
+test("a thrown conflict refusal stays not_applied, read_first, with the read", async () => {
+  const r = await guardWrite(async () => { throw new NotAppliedError("note \"n-1\" changed since version 2", { code: "conflict" }); }, { readWith: RW, what: "the update" });
+  assert.deepEqual([mws(r)["outcome"], mws(r)["code"], mws(r)["repeat"]], ["not_applied", "conflict", "read_first"]);
+  assert.deepEqual(mws(r)["read_with"], RW);
+  assert.match(text(r), /read it with "get_note"/);
+});
+
+test("a thrown refusal whose code is reserved for an open outcome is unknown", async () => {
+  const r = await guardWrite(async () => { throw new NotAppliedError("the backend answered 503", { code: "backend_error" }); }, { readWith: RW, what: "the update" });
+  assert.deepEqual([mws(r)["outcome"], mws(r)["code"], mws(r)["repeat"]], ["unknown", "backend_error", "read_first"]);
+  assert.deepEqual(mws(r)["read_with"], RW);
+});
+
+test("a malformed result with no read to name fails closed with repeat no, never read_first", () => {
+  const r = itemsResult({ summary: "x", items: [{ index: 0, outcome: "applied" }, { index: 1, outcome: "not_applied" }] });
+  closed(r, /read_first/);
+  assert.equal(mws(r)["repeat"], "no");
+  assert.equal(mws(itemsResult({ summary: "x", object: { id: 0 }, items: [{ index: 0, outcome: "applied" }, { index: 1, outcome: "not_applied" }] }))["repeat"], "read_first", "object.id 0 names the object");
+});
+
+test("defineTool checks the handler's own result", async () => {
+  const t = defineTool({
+    kind: "write", name: "w", description: "d", inputSchema: { type: "object", properties: {} },
+    hints: { destructive: false, idempotent: false, openWorld: false }, readWith: () => RW, outputSchema: outputSchemaFor(),
+    handler: () => ({ content: [{ type: "text", text: "ok" }], structuredContent: { mws: { shape: "write-result/0.1", outcome: "applied", repeat: "yes" } } }),
+  });
+  const r = await t.call({});
+  closed(r, /repeat "yes"/);
+  assert.deepEqual(mws(r)["read_with"], RW);
+  const plain = defineTool({
+    kind: "write", name: "p", description: "d", inputSchema: { type: "object", properties: {} },
+    hints: { destructive: false, idempotent: false, openWorld: false }, readWith: () => RW, outputSchema: outputSchemaFor(),
+    handler: () => ({ content: [{ type: "text", text: "done" }] }),
+  });
+  closed(await plain.call({}), /did not carry/);
+});
+
+test("one lost-answer table: an abort is not a lost answer for classifyError either", () => {
+  assert.equal(classifyError(Object.assign(new Error("aborted"), { name: "AbortError", code: "ABORT_ERR" })), "internal_error");
+  assert.equal(classifyError(Object.assign(new Error("t"), { code: "ETIMEDOUT" })), "no_answer");
+});
+
+test("a conflict without state says only that the version is in the JSON", () => {
+  const r = conflict({ id: "n-1", currentVersion: 4, readWith: RW });
+  assert.match(text(r), /^Its current version is in the JSON below\.$/m);
+  assert.doesNotMatch(text(r), /current state/);
 });

@@ -4,7 +4,7 @@
 export type { CallToolResult, TextContent, Tool, ToolAnnotations, MaybePromise } from "./types.js";
 
 export {
-  SHAPE, SHAPE_NAME, SHAPE_VERSION, RESERVED_CODES, q, pointer, pointerOf, isErrorFor, renderText, assertShape, toToolResult, readResult,
+  SHAPE, SHAPE_NAME, SHAPE_VERSION, RESERVED_CODES, q, pointer, pointerOf, isErrorFor, renderText, assertShape, checkResult, toToolResult, readResult,
   applied, notApplied, itemsResult, accepted, conflict,
   type Outcome, type Repeat, type ItemOutcome, type ReservedCode, type Idv, type Scalar, type ObjectRef, type ParentRef, type Item, type Conflict, type ArgumentError, type ReadWith, type ReadShape,
   type WriteResult, type TextOptions, type AppliedOptions, type NotAppliedOptions, type ItemsOptions, type AcceptedOptions, type ConflictOptions,
@@ -13,7 +13,7 @@ export {
 export { WRITE_RESULT_SCHEMA, outputSchemaFor, type OwnOutput } from "./schema.js";
 
 export {
-  unknownOutcome, guardWrite, classifyError, unknownCode, NotAppliedError, OutcomeUnknownError,
+  unknownOutcome, guardWrite, classifyError, unknownCode, refusalResult, refusalIsOpen, NotAppliedError, OutcomeUnknownError,
   type UnknownOutcomeOptions, type RepeatGuard, type ErrorClass, type GuardWriteOptions,
 } from "./outcome.js";
 

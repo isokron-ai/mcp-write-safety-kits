@@ -45,7 +45,7 @@ from ._mcp import CallToolResult, ToolAnnotations, structured_of
 from .result import ShapeError, assert_shape, not_applied, q
 from .schema import output_schema as _output_schema
 from .strict import check_arguments, refuse_arguments, strict_schema
-from .unknown import NotAppliedError, OutcomeUnknownError, classify_error, unknown_code, unknown_outcome
+from .unknown import NotAppliedError, OutcomeUnknownError, refusal_result, unknown_code, unknown_outcome
 
 try:  # SDK 2.x
     from mcp.shared.exceptions import MCPError as _ProtocolError  # type: ignore[attr-defined,unused-ignore]
@@ -415,14 +415,9 @@ class WriteSafety:
             if isinstance(c, (NotAppliedError, OutcomeUnknownError)):
                 root = c
                 break
-        if classify_error(e) == "not_applied":
-            if isinstance(root, NotAppliedError):
-                return not_applied(str(root), code=root.code, message=str(root))
-            return not_applied(
-                "the backend could not be reached, so the request was not sent",
-                code="not_sent",
-                message="the connection to the backend could not be made",
-            )
+        refused = refusal_result(e, read_with=self._read_with(spec, arguments))
+        if refused is not None:
+            return refused
         return unknown_outcome(
             f"{q(spec.name)} stopped with an error after it may have written",
             read_with=self._read_with(spec, arguments),

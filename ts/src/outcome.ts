@@ -7,7 +7,7 @@
 // settles it, and a `repeat` that MWS-RES-2 allows: `read_first`, or `same_key` / `same_version`
 // where the call carried an idempotency key or a version that guards the repeat. Never `yes`.
 
-import { SHAPE, notApplied, toToolResult, type ObjectRef, type ReadWith, type Repeat, type Idv } from "./result.js";
+import { SHAPE, RESERVED_CODES, notApplied, toToolResult, type ObjectRef, type ReadWith, type Repeat, type Idv } from "./result.js";
 import type { CallToolResult } from "./types.js";
 
 /** What guards a repeat of the same call: the idempotency key or the version it carried. */
@@ -92,9 +92,6 @@ export type ErrorClass = "refused" | "not_sent" | "no_answer" | "internal_error"
 
 /** Error codes meaning the request was not sent: the connection was never made. */
 const NOT_SENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ERR_INVALID_URL", "UND_ERR_CONNECT_TIMEOUT"]);
-/** Error codes and names meaning a request was sent, or may have been, and its answer was lost. */
-const NO_ANSWER_CODES = new Set(["ECONNRESET", "ETIMEDOUT", "EPIPE", "ECONNABORTED", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_CLOSED", "ABORT_ERR"]);
-const NO_ANSWER_NAMES = new Set(["AbortError", "TimeoutError"]);
 
 function codeOf(e: unknown): string | undefined {
   let cur: unknown = e;
@@ -136,8 +133,8 @@ export function classifyError(e: unknown): ErrorClass {
   if (e instanceof OutcomeUnknownError) return "no_answer";
   const code = codeOf(e);
   if (code && NOT_SENT_CODES.has(code)) return "not_sent";
-  if ((code && NO_ANSWER_CODES.has(code)) || (e instanceof Error && NO_ANSWER_NAMES.has(e.name))) return "no_answer";
-  return "internal_error";
+  // One table for a lost answer, unknownCode's: an abort is not one (it can come before the request was sent).
+  return unknownCode(e) === "no_answer" ? "no_answer" : "internal_error";
 }
 
 export interface GuardWriteOptions {
@@ -150,6 +147,29 @@ export interface GuardWriteOptions {
   what: string;
   /** What guards a repeat of this call, where anything does. */
   guard?: RepeatGuard;
+}
+
+/** True where a NotAppliedError carries a code that B-9 reserves for an open outcome (backend_error, ...). */
+export function refusalIsOpen(e: NotAppliedError): boolean {
+  const c = e.detail.code;
+  return c !== undefined && (RESERVED_CODES as Record<string, string>)[c] === "unknown";
+}
+
+/**
+ * The result for a thrown NotAppliedError. It names the read (`readWith`), which every conflict
+ * needs (`repeat: "read_first"`). A code that B-9 reserves for an open outcome gives `unknown` with
+ * that code, the cautious reading.
+ */
+export function refusalResult(e: NotAppliedError, o: { readWith: ReadWith; object?: Omit<ObjectRef, "version">; operation?: string; guard?: RepeatGuard }): CallToolResult {
+  const d = e.detail;
+  const object = d.object ?? o.object;
+  if (refusalIsOpen(e)) {
+    return unknownOutcome({ summary: e.message, code: d.code, readWith: o.readWith, object, operation: o.operation, guard: o.guard });
+  }
+  return notApplied({
+    summary: e.message, code: d.code, argument: d.argument, object, operation: o.operation, readWith: o.readWith,
+    repeat: d.code === "conflict" ? "read_first" : undefined,
+  });
 }
 
 /**
@@ -169,10 +189,7 @@ export async function guardWrite(write: () => Promise<CallToolResult>, o: GuardW
     return await write();
   } catch (e) {
     const k = classifyError(e);
-    if (k === "refused") {
-      const d = (e as NotAppliedError).detail;
-      return notApplied({ summary: (e as Error).message, code: d.code, argument: d.argument, object: d.object ?? o.object, operation: o.operation });
-    }
+    if (k === "refused") return refusalResult(e as NotAppliedError, o);
     if (k === "not_sent") {
       return notApplied({ summary: "the backend could not be reached, so the request was not sent", code: "not_sent", repeat: "yes", object: o.object, operation: o.operation });
     }

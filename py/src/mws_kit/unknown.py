@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from ._mcp import CallToolResult
-from .result import ReadWith, _object, not_applied, to_tool_result
+from .result import CODES, ReadWith, _object, not_applied, to_tool_result
 
 __all__ = [
     "RepeatGuard",
@@ -28,6 +28,7 @@ __all__ = [
     "classify_error",
     "unknown_code",
     "unknown_outcome",
+    "refusal_result",
     "guard_write",
     "guard_write_async",
 ]
@@ -178,6 +179,7 @@ def unknown_outcome(
     operation: str | None = None,
     items: Sequence[Mapping[str, Any]] | None = None,
     notes: Iterable[str] = (),
+    replayed: bool = False,
 ) -> CallToolResult:
     """A tool execution error that says the outcome is unknown (MWS-RES-2).
 
@@ -189,7 +191,9 @@ def unknown_outcome(
     ``code`` is ``no_answer`` by default; ``backend_error`` (an error answer that does not say
     whether the request was carried out), ``internal_error``, ``in_progress`` and
     ``key_not_known`` are the other reserved codes that go with ``unknown``.
-    ``items`` gives the parts whose outcome is known, where the call had several.
+    ``items`` gives the parts whose outcome is known, where the call had several. ``replayed``
+    says that this call applied nothing and the answer describes an earlier call with the same key
+    (``in_progress``, ``key_not_known``).
     """
     out: list[str] = []
     if cause:
@@ -209,6 +213,7 @@ def unknown_outcome(
             "object": obj,
             "items": [dict(i) for i in items] if items is not None else None,
             "code": code,
+            "replayed": True if replayed else None,
             "read_with": {"tool": read_with["tool"], "arguments": dict(read_with.get("arguments") or {})},
             "version_argument": ver[0] if ver is not None else None,
         },
@@ -216,6 +221,48 @@ def unknown_outcome(
         [*out, *notes],
         key=key,
         version=ver,
+    )
+
+
+def refusal_result(
+    e: BaseException,
+    *,
+    read_with: ReadWith | Mapping[str, Any] | None = None,
+    object: Mapping[str, Any] | None = None,  # noqa: A002
+    operation: str | None = None,
+    guard: RepeatGuard | None = None,
+) -> CallToolResult | None:
+    """The result for an error that :func:`classify_error` reads as ``not_applied``; None otherwise.
+
+    The :class:`NotAppliedError` is looked for through ``__cause__`` (outermost first), so a
+    refusal wrapped by ``raise ... from`` keeps its code and message. A refusal names the read
+    (``read_with``), which every conflict needs (``repeat: "read_first"``). A code that B-9 reserves
+    for an open outcome (``backend_error``, ``no_answer``, ...) gives ``unknown`` with that code,
+    the cautious reading. An error that shows the request was never sent gives ``not_sent``.
+    """
+    if classify_error(e) != "not_applied":
+        return None
+    rw: ReadWith | None = (
+        {"tool": read_with["tool"], "arguments": dict(read_with.get("arguments") or {})} if read_with else None
+    )
+    cur: BaseException | None = e
+    for _ in range(6):
+        if cur is None:
+            break
+        if isinstance(cur, NotAppliedError):
+            obj = cur.object if cur.object is not None else object
+            if cur.code is not None and CODES.get(cur.code) == "unknown":
+                if rw is None:
+                    raise TypeError(f"code {cur.code!r} implies an open outcome, which needs read_with")
+                return unknown_outcome(str(cur), read_with=rw, object=obj, operation=operation, guard=guard, code=cur.code)
+            return not_applied(str(cur), code=cur.code, message=str(cur), object=obj, operation=operation, read_with=rw)
+        cur = cur.__cause__
+    return not_applied(
+        "the backend could not be reached, so the request was not sent",
+        code="not_sent",
+        message="the connection to the backend could not be made",
+        object=object,
+        operation=operation,
     )
 
 
@@ -227,15 +274,9 @@ def _from_error(
     object: Mapping[str, Any] | None,  # noqa: A002
     guard: RepeatGuard | None,
 ) -> CallToolResult:
-    if classify_error(e) == "not_applied":
-        if isinstance(e, NotAppliedError):
-            return not_applied(str(e), code=e.code, message=str(e), object=e.object if e.object is not None else object)
-        return not_applied(
-            "the backend could not be reached, so the request was not sent",
-            code="not_sent",
-            message="the connection to the backend could not be made",
-            object=object,
-        )
+    refused = refusal_result(e, read_with=read_with, object=object, guard=guard)
+    if refused is not None:
+        return refused
     if isinstance(e, OutcomeUnknownError):
         cause: str | None = str(e) or None
     else:

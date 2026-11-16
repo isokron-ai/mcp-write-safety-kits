@@ -285,7 +285,13 @@ def build(store: NoteStore | None = None) -> tuple[Any, NoteStore]:
                             id=nid,
                             code="conflict",
                             message="changed since the version you read",
-                            conflict=conflict_info(current_version=current["version"], checked_by="backend", current_state=current),
+                            # Only the fields the guard allow-lists, as for a single conflict.
+                            conflict=conflict_info(
+                                current_version=current["version"],
+                                checked_by="backend",
+                                current_state={k: v for k, v in current.items() if k in guard["state_fields"]},
+                                omitted=[pointer(k) for k in current if k not in guard["state_fields"]],
+                            ),
                         )
                     )
                 else:

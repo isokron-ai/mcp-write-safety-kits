@@ -193,5 +193,33 @@
       "summary": "the export was queued"
     },
     "text": "Accepted: the export was queued. The backend has not yet reported the result.\nDo not send the same call again.\nTo see the current state, read it with \"get_export\" and the arguments {\"id\":\"e1\"}."
+  },
+  {
+    "name": "conflict without state (the safe default)",
+    "shape": {
+      "shape": "write-result/0.1",
+      "outcome": "not_applied",
+      "repeat": "read_first",
+      "code": "conflict",
+      "object": {
+        "type": "note",
+        "id": "n-3"
+      },
+      "conflict": {
+        "current_version": 4,
+        "checked_by": "server"
+      },
+      "read_with": {
+        "tool": "get_note",
+        "arguments": {
+          "id": "n-3"
+        }
+      },
+      "version_argument": "expected_version"
+    },
+    "options": {
+      "summary": "note \"n-3\" changed since version 2"
+    },
+    "text": "Not applied: note \"n-3\" changed since version 2. Nothing was changed.\nIts current version is in the JSON below.\nBefore writing again, read it with \"get_note\" and the arguments {\"id\":\"n-3\"} and build the write from what the read shows."
   }
 ]
