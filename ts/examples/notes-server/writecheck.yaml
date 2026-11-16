@@ -51,7 +51,7 @@ review:
   rejection_gives_reason: "expected |must |is required|is not an argument"
 
 # Spec 7.3, rule 11: how the server says what a result says. Every write result carries the
-# write-result/0.1 shape (MWS 0.9 draft Annex B-9) in structuredContent.mws, and two text blocks:
+# write-result/0.1 shape (MWS 0.9, Annex B, B-9) in structuredContent.mws, and two text blocks:
 # a sentence that opens with the outcome ("Applied:", "Not applied:", "Partly applied:",
 # "Outcome unknown:", "Accepted:") and the serialized JSON of structuredContent. The manifest format
 # at the tested commit cannot adopt a shape by name and version, so these patterns read the
