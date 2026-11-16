@@ -40,7 +40,7 @@ Every write result carries the write-result/0.1 shape (draft Annex B-9) in `stru
 
 ### Results of one run
 
-mcp-writecheck at commit e613620 (0.1.0-dev.0, MWS 0.9), run `4d5ed5e493`, plan `7eb58cb932213878`, 16 November 2026 (UTC). One row per requirement; the write paths for each verdict are in brackets. There is no total: `not tested` and `not applicable` rows make any count meaningless (spec 5.2). No record is `violated`.
+mcp-writecheck at commit e613620 (0.1.0-dev.0, MWS 0.9), run `c8f24752f9`, plan `7eb58cb932213878`, 16 November 2026 (UTC). One row per requirement; the write paths for each verdict are in brackets. There is no total: `not tested` and `not applicable` rows make any count meaningless (spec 5.2). No record is `violated`.
 
 | Requirement | Level | Verdicts (write paths) |
 |---|---|---|
