@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from ._mcp import CallToolResult
-from .result import CODES, ReadWith, _object, not_applied, to_tool_result
+from .result import CODES, ReadWith, ShapeError, _object, not_applied, to_tool_result
 
 __all__ = [
     "RepeatGuard",
@@ -251,11 +251,16 @@ def refusal_result(
             break
         if isinstance(cur, NotAppliedError):
             obj = cur.object if cur.object is not None else object
-            if cur.code is not None and CODES.get(cur.code) == "unknown":
-                if rw is None:
-                    raise TypeError(f"code {cur.code!r} implies an open outcome, which needs read_with")
-                return unknown_outcome(str(cur), read_with=rw, object=obj, operation=operation, guard=guard, code=cur.code)
-            return not_applied(str(cur), code=cur.code, message=str(cur), object=obj, operation=operation, read_with=rw)
+            try:
+                if cur.code is not None and CODES.get(cur.code) == "unknown":
+                    if rw is None:
+                        raise ShapeError(f"code {cur.code!r} implies an open outcome, which needs read_with")
+                    return unknown_outcome(str(cur), read_with=rw, object=obj, operation=operation, guard=guard, code=cur.code)
+                return not_applied(str(cur), code=cur.code, message=str(cur), object=obj, operation=operation, read_with=rw)
+            except ShapeError as bad:
+                # A refusal the shape cannot carry (a malformed code, say): fail closed, as the
+                # TypeScript kit does, instead of raising past the tool.
+                return _fail_closed(str(bad), read_with=rw, object=obj, fallback_object=object, operation=operation)
         cur = cur.__cause__
     return not_applied(
         "the backend could not be reached, so the request was not sent",
@@ -264,6 +269,42 @@ def refusal_result(
         object=object,
         operation=operation,
     )
+
+
+def _fail_closed(
+    why: str,
+    *,
+    read_with: ReadWith | None,
+    object: Mapping[str, Any] | None,  # noqa: A002
+    fallback_object: Mapping[str, Any] | None = None,
+    operation: str | None = None,
+) -> CallToolResult:
+    """``unknown`` with ``internal_error`` for a result the server could not build in the shape.
+    ``repeat`` is ``read_first`` only where a read can be named (``read_with`` or ``object.id``),
+    otherwise ``no``: a ``read_first`` that names no read is read as ``yes`` (B-9)."""
+    message = f"The server built a malformed result ({why}); the write may or may not have been applied."
+    last: ShapeError | None = None
+    for obj in (object, fallback_object, None):
+        try:
+            o = _object(obj)
+            o = {k: v for k, v in (o or {}).items() if k in ("type", "id")} or None
+            named = read_with is not None or (o is not None and o.get("id") is not None)
+            return to_tool_result(
+                {
+                    "outcome": "unknown",
+                    "repeat": "read_first" if named else "no",
+                    "operation": operation,
+                    "object": o,
+                    "code": "internal_error",
+                    "message": message,
+                    "read_with": read_with,
+                },
+                "the server could not report what this call did",
+            )
+        except ShapeError as e:  # a malformed object or operation: try without it
+            last = e
+            operation = None
+    raise last  # type: ignore[misc]  # pragma: no cover - the last form has no caller-given member
 
 
 def _from_error(

@@ -357,3 +357,46 @@ def test_conflict_without_state_says_only_the_version():
     r = k.conflict("n-1", read_tool="get_note", current_version=4, checked_by="server")
     assert "Its current version is in the JSON below." in r.content[0].text
     assert "current state" not in r.content[0].text
+
+
+# -- a refusal the shape cannot carry fails closed (as the TypeScript kit does) --------------------
+
+
+def _bad_code_refusal() -> None:
+    raise k.NotAppliedError("refused", code="Bad-Code")
+
+
+def test_malformed_refusal_code_fails_closed_with_the_read():
+    m = structured_of(k.guard_write(_bad_code_refusal, read_with=RW, what="the update"))["mws"]
+    assert (m["outcome"], m["code"], m["repeat"]) == ("unknown", "internal_error", "read_first")
+    assert m["read_with"] == RW
+
+
+def test_malformed_refusal_code_without_a_read_says_no():
+    m = structured_of(k.refusal_result(k.NotAppliedError("refused", code="Bad-Code")))["mws"]
+    assert (m["outcome"], m["code"], m["repeat"]) == ("unknown", "internal_error", "no")
+    m = structured_of(k.refusal_result(k.NotAppliedError("refused", code="Bad-Code", object={"type": "note", "id": 0})))["mws"]
+    assert m["repeat"] == "read_first" and m["object"] == {"type": "note", "id": 0}
+
+
+def test_malformed_refusal_code_through_the_server():
+    server = FastMCP("t")
+    kit = k.WriteSafety(server)
+
+    @kit.read_tool(open_world=False)
+    def get_note(id: str) -> CallToolResult:  # noqa: A002
+        return k.read_answer({"id": id})
+
+    @kit.write_tool(read_tool="get_note", read_arguments={"id": "id"})
+    def save(id: str) -> CallToolResult:  # noqa: A002
+        return k.guard_write(_bad_code_refusal, read_with=k.read_with("get_note", id=id), what="the save")
+
+    @kit.write_tool(read_tool="get_note", read_arguments={"id": "id"})
+    def save_raising(id: str) -> CallToolResult:  # noqa: A002
+        _bad_code_refusal()
+        raise AssertionError("unreachable")
+
+    for tool in ("save", "save_raising"):
+        r = run(call(server, tool, {"id": "a"}))
+        assert r.shape["outcome"] == "unknown" and r.shape["code"] == "internal_error", tool
+        assert r.shape["repeat"] == "read_first" and r.shape["read_with"] == {"tool": "get_note", "arguments": {"id": "a"}}, tool

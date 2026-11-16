@@ -51,13 +51,13 @@ export interface DefinedTool {
   call(args: unknown, extra?: unknown): Promise<CallToolResult>;
 }
 
-/** Defines a tool. Throws SchemaError when the input schema uses a keyword the validator does not enforce. */
 /** True where an outputSchema requires the member mws (as outputSchemaFor's does). */
 function requiresMws(schema: Record<string, unknown> | undefined): boolean {
   const req = schema?.["required"];
   return Array.isArray(req) && req.includes("mws");
 }
 
+/** Defines a tool. Throws SchemaError when the input schema uses a keyword the validator does not enforce. */
 export function defineTool<A = Record<string, unknown>>(spec: ToolSpec<A>): DefinedTool {
   const input = strictInput(spec.inputSchema, { versionArgument: spec.kind === "write" ? spec.versionArgument : undefined });
   const annotations = spec.kind === "read" ? readOnlyHints(spec.hints) : writeHints(spec.hints);
