@@ -30,7 +30,7 @@ import inspect
 import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 from ._mcp import CallToolResult
 from .result import applied, conflict, not_applied, pointer, q
@@ -181,7 +181,7 @@ class VersionGuard(Generic[C]):
             argument=pointer(self.version_arg),
             object=self._obj(id),
             operation=operation,
-            read_with=self._read_with(id),
+            read_with=self._read_with(id),  # type: ignore[arg-type]
             notes=[
                 f"Read {self.noun} {q(id)} with {q(self.read_tool)} and send the version it returns as {self.version_arg}, "
                 "so that a change made since your read is not overwritten"
@@ -249,15 +249,15 @@ class VersionGuard(Generic[C]):
         if expected_version is None and self.require_version:
             return self._version_required(id, operation)
         with self._lock_for(id):
-            current = self.read(id)
+            current = cast("Snapshot | None", self.read(id))
             if current is None:
                 return self._missing(id, operation)
             if expected_version is not None and not _same_version(expected_version, current.version):
                 return self._conflict(id, current, operation)
             try:
-                after = self.write(id, change, expected_version)
+                after = cast("Snapshot | None", self.write(id, change, expected_version))
             except VersionConflict as vc:
-                now = vc.current or self.read(id)  # type: ignore[assignment]
+                now = vc.current or cast("Snapshot | None", self.read(id))
                 return self._conflict(id, now, operation) if now is not None else self._missing(id, operation)
             except Exception as e:  # noqa: BLE001
                 return self._error(id, e, expected_version, what, operation)

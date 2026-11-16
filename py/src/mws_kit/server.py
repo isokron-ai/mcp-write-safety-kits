@@ -32,7 +32,7 @@ from .strict import check_arguments, refuse_arguments, strict_schema
 from .unknown import NotAppliedError, OutcomeUnknownError, classify_error, unknown_outcome
 
 try:  # SDK 2.x
-    from mcp.shared.exceptions import MCPError as _ProtocolError
+    from mcp.shared.exceptions import MCPError as _ProtocolError  # type: ignore[attr-defined,unused-ignore]
 except ImportError:  # SDK 1.x
     from mcp.shared.exceptions import McpError as _ProtocolError  # type: ignore[no-redef,attr-defined]
 
@@ -147,7 +147,7 @@ class WriteSafety:
         meta.output_schema = schema
         if "output_model" in type(meta).model_fields and getattr(meta, "output_model", None) is None:
             try:  # SDK 1.x asserts that a model exists whenever a schema does
-                from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata  # noqa: F401
+                from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata  # type: ignore[import-not-found]  # noqa: F401
                 meta.output_model = _AnyObject
             except ImportError:  # SDK 2.x: a schema without a model is published and not validated
                 pass

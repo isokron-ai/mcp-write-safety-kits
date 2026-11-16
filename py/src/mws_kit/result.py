@@ -578,7 +578,7 @@ def as_replay(result: CallToolResult) -> CallToolResult:
     shape with ``replayed: true``, and :data:`REPLAY_NOTE` in the first text block."""
     s = structured_of(result) or {}
     m = s.get("mws") if isinstance(s, dict) else None
-    texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
+    texts = [getattr(b, "text", "") for b in result.content if getattr(b, "type", None) == "text"]
     first = texts[0] if texts else ""
     lines = first.split("\n")
     lines.insert(1, REPLAY_NOTE)
@@ -594,7 +594,7 @@ def as_replay(result: CallToolResult) -> CallToolResult:
         "content": [TextContent(type="text", text="\n".join(lines)), TextContent(type="text", text=q(new))],
         "structuredContent": new,
     }
-    if _IS_ERROR.get(m.get("outcome"), True):
+    if _IS_ERROR.get(str(m.get("outcome")), True):
         kwargs["isError"] = True
     return CallToolResult(**kwargs)
 
@@ -602,7 +602,8 @@ def as_replay(result: CallToolResult) -> CallToolResult:
 def read_answer(value: Mapping[str, Any], text: str | None = None) -> CallToolResult:
     """The answer of a read tool: ``value`` in ``structuredContent`` and, unless ``text`` is given,
     the same value as JSON in the text block. Not a write result."""
-    return CallToolResult(
-        content=[TextContent(type="text", text=text if text is not None else q(value))],
-        structuredContent=dict(value),
-    )
+    kwargs: dict[str, Any] = {
+        "content": [TextContent(type="text", text=text if text is not None else q(value))],
+        "structuredContent": dict(value),  # camelCase works with both SDK lines
+    }
+    return CallToolResult(**kwargs)

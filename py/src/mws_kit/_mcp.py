@@ -32,4 +32,4 @@ def is_error_of(result: CallToolResult) -> bool:
 
 def text_of(result: CallToolResult) -> str:
     """The text of the result's text blocks, joined by new lines."""
-    return "\n".join(b.text for b in result.content if getattr(b, "type", None) == "text")
+    return "\n".join(getattr(b, "text", "") for b in result.content if getattr(b, "type", None) == "text")

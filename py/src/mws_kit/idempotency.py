@@ -374,4 +374,3 @@ class Idempotency:
         else:
             await _maybe(self.store.release(scope, key))
         return result
-

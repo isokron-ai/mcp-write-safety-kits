@@ -177,9 +177,9 @@ class _Checker:
                 if out:
                     return out
         if "anyOf" in schema or "oneOf" in schema:
-            issues = self._alternatives(schema, value, path)
-            if issues:
-                return issues
+            alt = self._alternatives(schema, value, path)
+            if alt:
+                return alt
 
         types = schema.get("type")
         if types is not None:
