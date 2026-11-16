@@ -4,7 +4,7 @@ Small TypeScript helpers for the write tools of an MCP server. They cover the pa
 
 Using the kit helps a server meet MWS. It does not make a server conformant, and nothing in the kit says that it does. Only the tests decide: run `mcp-writecheck` (or another tester that follows the spec) against your server, and read the result per requirement and write path.
 
-- No runtime dependency. The optional peer dependency `@modelcontextprotocol/sdk` is used for types only; the kit's own structural types also fit the 2.x SDK packages.
+- No runtime dependency. The kit does not import an MCP SDK: its own structural types fit the results of the 1.x SDK (`@modelcontextprotocol/sdk`, declared as an optional peer dependency) and of the 2.x SDK packages.
 - Node 20 or later, ES modules.
 - Apache-2.0. Not published yet; build it from this repository.
 
@@ -118,12 +118,12 @@ Every result the kit builds for a write carries the write-result shape, version 
 The caller sends the version it read. The helper reads the current version through your `read` callback and compares before it calls your `write` callback. On a mismatch nothing is written, and the caller gets a conflict: a tool execution error with `code: "conflict"`, `repeat: "read_first"`, `conflict.current_version` on its own beside `conflict.current_state`, `read_with` and `version_argument`. Its text tells the caller to build the write again from that state or read again, not to resend its earlier values with the new version.
 
 - `requireVersion` (default `true`): a call without a version is refused with `code: "version_required"` and `argument` pointing to the version argument. A version the caller may leave out makes the unchecked write the default (MWS-CONC-2 guidance). Set it to `false` only for a field patch whose fields are independent.
-- `override` and `overrideArg`: an explicit override argument whose default is off (such as `force: true`). It applies only when no version was sent; a version that was sent is always checked (MWS-CONC-1).
+- `override`: the value of an explicit override argument whose default is off (such as `force: true`). It applies only when no version was sent; a version that was sent is always checked (MWS-CONC-1).
 - `VersionConflictError`: throw it from `write` when the backend's own precondition refused the write (an ETag with `If-Match`, Annex B-2). The helper returns the same conflict.
 - `conflictState`: returns `{ state, omitted }`: only fields the caller may read through the read tool, never a secret, and the JSON Pointers of the fields left out. Where fields are left out, the text asks for a read before writing again.
 - `versionSource`: `backend` (default) where the version is the backend's own, `server` where the server derives it (B-3).
 - `lock`: calls for the same object are serialized inside the process by default (Annex B-4). This closes the window between the comparison and the write for writers in one process only. Where other writers reach the backend directly, the comparison is best-effort (Annex B-3): pass the version to the backend as well, or say in the tool's description that stale writes are detected only on a best-effort basis (MWS-CONC-5).
-- A `write` callback that throws anything else gives an unknown outcome with `read_with` and `repeat: "same_version"`.
+- A `write` callback that throws anything else gives an unknown outcome with `read_with`, and `repeat: "same_version"` where the call carried a version (`read_first` otherwise). The code is `no_answer` for a timeout or a lost connection and `internal_error` for any other error.
 
 ### Retry keys
 
@@ -138,8 +138,9 @@ handler: (args) => withIdempotency({ store, scope: "create_note", args, readWith
 
 - The same key with the same arguments returns the first call's result with `replayed: true` (and `_meta["mws/replay"]: true`), and applies nothing new. `changed` is kept as the first call gave it.
 - The same key with different arguments is refused (`code: "idempotency_key_reused"`, `argument: "/idempotency_key"`); nothing is applied.
-- Two calls with the same key at the same time never both write. The second waits for the first and then gets its result (`concurrent: "wait"`, the default), or is refused as still in progress (`concurrent: "refuse"`; `code: "in_progress"`, `repeat: "same_key"`).
-- A first call that applied nothing releases its key, so a later call with the key is a new attempt. A first call whose outcome is unknown (or that threw) keeps the key: a repeat applies nothing and answers `outcome: "unknown"` with `repeat: "read_first"` and `read_with`. A partial or accepted first result is kept and replayed.
+- Two calls with the same key at the same time never both write. The second waits for the first (up to `waitMs`, default 10 s) and then gets its result (`concurrent: "wait"`, the default), or is refused as still in progress (`concurrent: "refuse"`, or the wait ran out; `code: "in_progress"`, `repeat: "same_key"`).
+- A first call that applied nothing releases its key, so a later call with the key is a new attempt. That is a call that returned `not_applied`, or that threw a `NotAppliedError` or an error showing the request was never sent. A first call whose outcome is unknown, or that threw any other error, keeps the key: a repeat applies nothing and answers `outcome: "unknown"` with `repeat: "read_first"` and `read_with`, and says to use a new key if the read shows the write was not applied. A partial or accepted first result is kept and replayed.
+- `MemoryIdempotencyStore({ ttlMs, maxEntries })` never drops a live key to make room: a repeat with a dropped key would write again. When every slot holds a live key, a new key is refused (`code: "key_store_full"`, nothing sent) until one expires.
 - Arguments are compared by a SHA-256 of their canonical JSON, without the key.
 - `idempotencyKeyProperty({ ttlMs })` gives the argument's schema, with a description that tells the caller to send the same key when retrying the same intended write and says how long keys are remembered (MWS-RETRY-1 guidance).
 
@@ -161,20 +162,20 @@ Every refusal is a tool execution error that names the argument, what was expect
 Not applied: argument "priority" was refused: expected integer, got string "5". Nothing was changed.
 ```
 
-The validator supports a fixed subset of JSON Schema (`SUPPORTED_KEYWORDS`). A schema that uses any other keyword (`anyOf`, `$ref`, `if`, `patternProperties`, ...) is refused with `SchemaError` when the tool is defined: a keyword the validator ignored would be a constraint the tool advertises and does not enforce. zod is not needed; a zod schema can be converted to JSON Schema first if it stays within the subset.
+The validator supports a fixed subset of JSON Schema (`SUPPORTED_KEYWORDS`). A schema that uses any other keyword (`anyOf`, `$ref`, `if`, `patternProperties`, ...), or a supported keyword with a value of the wrong form (a boolean `exclusiveMinimum`, a schema for `additionalProperties`, a `required` that is not a list of names), is refused with `SchemaError` when the tool is defined: a keyword the validator ignored would be a constraint the tool advertises and does not enforce. zod is not needed; a zod schema can be converted to JSON Schema first if it stays within the subset.
 
 ### Result builder
 
-`applied`, `notApplied`, `partial`, `conflict`, `toToolResult`, `renderText`, `readResult`, `q`: MWS-RES-1, RES-2, RES-3, RES-4, ATOM-1, CONC-4, CONC-6.
+`applied`, `notApplied`, `itemsResult`, `accepted`, `conflict`, `toToolResult`, `renderText`, `readResult`, `q`: MWS-RES-1, RES-2, RES-3, RES-4, ATOM-1, CONC-4, CONC-6.
 
 - `applied({ summary, operation, object, changed, readWith })`: a receipt with the object's type, id and new version and the fields changed, as JSON Pointers (MWS-RES-3, RES-4). Use it only when the state the caller asked for is in effect (MWS-RES-1). For a no-op, pass `changed: []`; for a delete, leave `changed` out. `repeat` defaults to `no`.
 - `notApplied({ summary, code, argument, readWith, repeat })`: a refusal (`isError: true`) for a backend refusal, a rule of the tool or a missing object (MWS-RES-2). `repeat` defaults to `no`; use `yes` where nothing was sent or the refusal may not recur.
-- `itemsResult({ summary, items, appliedCount })`: a write of several items or steps. The outcome follows from the items: `unknown` if any is unknown, `applied` if none failed, `partial` if some were applied and some not, `not_applied` if none was. It names each item by `index` and `id` (MWS-ATOM-1). `repeat` defaults to `read_first` for `partial` and `unknown`.
+- `itemsResult({ summary, items, appliedCount })`: a write of several items or steps. The outcome follows from the items: `unknown` if any is unknown, `applied` if none failed, `partial` if some were applied and some not, `not_applied` if none was. It names each item by `index` and `id` (MWS-ATOM-1). `repeat` defaults to `read_first` for `partial` and `unknown`; give `readWith` (or an `object` with an `id`) so that the read can be named.
 - `accepted({ summary, readWith })`: accepted for later processing by a backend that completes the operation asynchronously (NF-19).
 - `conflict({ id, type, currentVersion, currentState, omitted, readWith, versionArgument, code, heldBy })`: see [Version check](#version-check). `code: "locked"` with `heldBy` for a lock.
 - `q(value)` quotes a value for a sentence (as JSON), so that each value can be read only one way. Use it in every `summary`.
 
-`assertShape` checks the rules B-9 states (no `repeat: "yes"` with an open outcome, no object version on a refusal, a `current_version` only with `current_state` or `read_first`, codes in lowercase, pointers that are pointers); every builder calls it.
+`assertShape` checks the rules B-9 states (no `repeat: "yes"` with an open outcome or after an applied delete, `read_first` only with `read_with` or `object.id`, no open item outside `unknown`, no object version on a refusal, a non-empty `current_version` only with `current_state` or `read_first`, codes in lowercase, pointers that are pointers); every builder calls it. `toToolResult` also refuses `same_key` or `same_version` unless the text options carry the key or version the call sent. The first text block names the read wherever `read_with` is given.
 
 ### Unknown outcomes
 
@@ -183,7 +184,7 @@ The validator supports a fixed subset of JSON Schema (`SUPPORTED_KEYWORDS`). A s
 When the backend's answer is lost (a timeout, a closed or reset connection), the server does not know whether the write was applied. Saying that it failed invites a duplicate; saying that it succeeded may be false. `unknownOutcome` returns a tool execution error with `outcome: "unknown"` that:
 
 - says it is not known whether the change was applied;
-- has `code: "no_answer"` and names the read that settles it (`read_with`, required);
+- has a code (default `no_answer`; `guardWrite` gives `internal_error` where the error does not show a lost answer) and names the read that settles it (`read_with`, required);
 - sets `repeat` to `same_key` or `same_version` where the call carried an idempotency key or a version that guards the repeat (`guard`), and otherwise to `read_first`. Never `yes`. MWS-RES-2 forbids telling the caller to repeat a write whose outcome is open on any other terms.
 
 `guardWrite` runs a write and turns a thrown error into a truthful result: a `NotAppliedError`, or a request that was never sent (connection refused, name not resolved), becomes `not_applied` (the latter with `code: "not_sent"` and `repeat: "yes"`); anything else, including an error it does not recognise, becomes `unknown`. The raw error message is never copied into the result, because a client error can carry a URL with a token (MWS-SEC-1). Report an outcome the server has established as what it is: an answer the backend gave is a settled outcome, and MWS-RES-2 forbids reporting it as unknown.
@@ -241,7 +242,7 @@ The table points from a `violated` record of `mcp-writecheck` (or its GitHub Act
 
 ## Example and CI
 
-`examples/notes-server` is a small MCP server over an in-memory store (notebooks and notes, a list field, a bulk delete), built only with the kit and the 1.x SDK. Its `writecheck.yaml` is the manifest for `mcp-writecheck`, and its README records the results of a run. `.github/workflows/mws.yml` runs the mcp-writecheck GitHub Action on it.
+`examples/notes-server` is a small MCP server over an in-memory store (notebooks and notes, a list field, a bulk delete), built only with the kit and the 1.x SDK. Its `writecheck.yaml` is the manifest for `mcp-writecheck`, and its README records the results of a run.
 
 ## Develop
 

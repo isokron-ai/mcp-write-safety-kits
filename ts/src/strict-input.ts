@@ -174,6 +174,19 @@ export function assertSupportedSchema(schema: JsonSchema, at = "inputSchema"): v
       throw new SchemaError(`${at}.pattern is not a valid regular expression: ${(e as Error).message}`);
     }
   }
+  if (schema.pattern !== undefined && typeof schema.pattern !== "string") throw new SchemaError(`${at}.pattern must be a string`);
+  for (const k of ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"] as const) {
+    const v = (schema as Record<string, unknown>)[k];
+    if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v))) throw new SchemaError(`${at}.${k} must be a finite number (the draft-04 boolean form is not supported)`);
+  }
+  for (const k of ["minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties"] as const) {
+    const v = (schema as Record<string, unknown>)[k];
+    if (v !== undefined && !(Number.isInteger(v) && (v as number) >= 0)) throw new SchemaError(`${at}.${k} must be a non-negative integer`);
+  }
+  const ap = (schema as Record<string, unknown>)["additionalProperties"];
+  if (ap !== undefined && typeof ap !== "boolean") throw new SchemaError(`${at}.additionalProperties must be true or false (a schema for extra members is not supported)`);
+  const req = (schema as Record<string, unknown>)["required"];
+  if (req !== undefined && !(Array.isArray(req) && req.every((r) => typeof r === "string"))) throw new SchemaError(`${at}.required must be an array of strings`);
   if (schema.multipleOf !== undefined && !(schema.multipleOf > 0)) throw new SchemaError(`${at}.multipleOf must be greater than 0`);
   if (schema.properties) for (const [k, s] of Object.entries(schema.properties)) assertSupportedSchema(s, `${at}.properties.${k}`);
   if (schema.items) assertSupportedSchema(schema.items, `${at}.items`);
@@ -258,7 +271,7 @@ function checkValue(schema: JsonSchema, value: unknown, path: string, segs: Arra
     const known = Object.keys(props);
     for (const k of keys) {
       if (Object.prototype.hasOwnProperty.call(props, k)) checkValue(props[k]!, obj[k], join(path, k), [...segs, k], issues);
-      else if (schema.additionalProperties !== true) {
+      else if (schema.additionalProperties === false) {
         const near = nearest(k, known);
         issues.push({
           path: join(path, k),
@@ -282,7 +295,8 @@ function checkValue(schema: JsonSchema, value: unknown, path: string, segs: Arra
 /** Validates arguments against a schema. Returns the issues; an empty list means the arguments are valid. */
 export function validateArguments(schema: JsonSchema, args: unknown): InputIssue[] {
   const issues: InputIssue[] = [];
-  checkValue(schema, args === undefined ? {} : args, "", [], issues);
+  // Closed as advertised: an object level that does not say otherwise refuses members it does not define.
+  checkValue(closeSchema(schema), args === undefined ? {} : args, "", [], issues);
   return issues;
 }
 

@@ -44,13 +44,14 @@ test("notApplied: isError, code, message, argument as a pointer, no object versi
 test("itemsResult derives the outcome from the items", () => {
   const it = (outcome: "applied" | "not_applied" | "not_attempted" | "unknown", i: number) => ({ index: i, id: `n-${i}`, outcome });
   assert.equal(mws(itemsResult({ summary: "s", items: [it("applied", 0), it("applied", 1)] }))["outcome"], "applied");
-  const p = itemsResult({ summary: "deleted 1 of 2", items: [it("applied", 0), { ...it("not_applied", 1), code: "not_found", message: "no such note" }] });
+  const rw = { tool: "list_notes", arguments: {} };
+  const p = itemsResult({ summary: "deleted 1 of 2", readWith: rw, items: [it("applied", 0), { ...it("not_applied", 1), code: "not_found", message: "no such note" }] });
   assert.equal(p.isError, true);
   assert.equal(mws(p)["outcome"], "partial");
   assert.equal(mws(p)["repeat"], "read_first");
   assert.match(text(p), /^Partly applied: deleted 1 of 2\./);
   assert.equal(mws(itemsResult({ summary: "s", items: [it("not_applied", 0), it("not_attempted", 1)] }))["outcome"], "not_applied");
-  assert.equal(mws(itemsResult({ summary: "s", items: [it("applied", 0), it("unknown", 1)] }))["outcome"], "unknown", "unknown wins over partial");
+  assert.equal(mws(itemsResult({ summary: "s", readWith: rw, items: [it("applied", 0), it("unknown", 1)] }))["outcome"], "unknown", "unknown wins over partial");
   assert.equal(mws(itemsResult({ summary: "s", items: [], appliedCount: 3 }))["applied_count"], 3);
   assert.equal(mws(itemsResult({ summary: "matched nothing", items: [], appliedCount: 0 }))["outcome"], "applied");
 });

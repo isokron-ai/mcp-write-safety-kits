@@ -37,7 +37,9 @@ export type BeginResult =
   /** A write with this key is running. `wait`, where the store offers it, resolves when it ends. */
   | { status: "in_progress"; wait?: () => Promise<void> }
   /** The earlier write's outcome is not known (its answer was lost). */
-  | { status: "unknown" };
+  | { status: "unknown" }
+  /** The store cannot take another key now without forgetting a live one: nothing may be written. */
+  | { status: "full" };
 
 /** Where the server keeps its keys. Every method must be atomic per (scope, key). */
 export interface IdempotencyStore {
@@ -64,7 +66,11 @@ type Entry = {
 export interface MemoryStoreOptions {
   /** How long a key is remembered, in milliseconds. Default 24 hours. */
   ttlMs?: number;
-  /** Most keys kept; the oldest finished keys are dropped first. Default 10,000. */
+  /**
+   * Most keys kept. Default 10,000. A live key (not yet expired) is never dropped to make room,
+   * because a repeat with a dropped key would write again: when every slot holds a live key, a
+   * new key is refused (code "key_store_full") until one expires.
+   */
   maxEntries?: number;
   /** The clock (for tests). */
   now?: () => number;
@@ -93,11 +99,6 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
   private prune(): void {
     const t = this.now();
     for (const [k, e] of this.entries) if (e.state !== "pending" && e.expires <= t) this.entries.delete(k);
-    if (this.entries.size < this.maxEntries) return;
-    for (const [k, e] of this.entries) {
-      if (this.entries.size < this.maxEntries) break;
-      if (e.state !== "pending") this.entries.delete(k);
-    }
   }
 
   /** The number of keys held (for tests). */
@@ -116,6 +117,8 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
       if (e.state === "unknown") return { status: "unknown" };
       return { status: "replay", result: e.result! };
     }
+    if (e) this.entries.delete(id); // expired
+    if (this.entries.size >= this.maxEntries) return { status: "full" };
     let settle!: () => void;
     const done = new Promise<void>((r) => (settle = r));
     const token = randomUUID();
@@ -170,6 +173,8 @@ export interface IdempotencyOptions {
   readWith: ReadWith;
   /** What a second concurrent call with the same key does: wait for the first (default) or be refused. */
   concurrent?: "wait" | "refuse";
+  /** How long a second concurrent call waits for the first, in milliseconds, before it is refused as in progress. Default 10,000. */
+  waitMs?: number;
   /** The fingerprint of the arguments. Default: a hash of `args` without the key (fingerprintOf). */
   fingerprint?: string;
 }
@@ -203,16 +208,31 @@ export async function withIdempotency(o: IdempotencyOptions, write: () => Promis
         return unknownOutcome({
           summary: `the earlier call with ${keyArg} ${q(key)} was sent and its answer was lost; this call applied nothing`,
           readWith: o.readWith,
+          notes: [`A repeat with the same ${keyArg} applies nothing and returns this answer. If the read shows that the write was not applied, send it again with a new ${keyArg}`],
+        });
+      case "full":
+        return notApplied({
+          summary: `the server holds as many idempotency keys as it can keep, so this call was refused before anything was sent`,
+          code: "key_store_full",
+          repeat: "yes",
+          notes: ["Send the same call again later; keys are forgotten when their time to live ends"],
         });
       case "in_progress":
         if ((o.concurrent ?? "wait") === "wait" && b.wait) {
-          await b.wait();
-          continue;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const settled = await Promise.race([
+            b.wait().then(() => true),
+            new Promise<boolean>((r) => { timer = setTimeout(() => r(false), o.waitMs ?? 10_000); }),
+          ]);
+          clearTimeout(timer);
+          if (settled) continue;
         }
         return notApplied({
           summary: `an earlier call with ${keyArg} ${q(key)} is still in progress; this call applied nothing`,
           code: "in_progress",
           repeat: "same_key",
+          keyArgument: keyArg,
+          key,
           readWith: o.readWith,
         });
       case "new": {
@@ -237,6 +257,14 @@ export async function withIdempotency(o: IdempotencyOptions, write: () => Promis
   }
 }
 
+// The sentences renderText adds after the summary on the first line, by outcome.
+const FIXED_TAILS = [
+  " Nothing was changed.",
+  " Some items remain applied; the JSON below gives the outcome of each.",
+  " It is not known whether the change was applied.",
+  " The backend has not yet reported the result.",
+];
+
 /** The `_meta` key that also marks a replayed result (the shape's own marker is `mws.replayed`). */
 export const REPLAY_META_KEY = "mws/replay";
 
@@ -254,10 +282,12 @@ export function replayOf(first: CallToolResult, keyArg: string, key: string): Ca
     return { ...first, content: [{ type: "text", text: `Replay: an earlier call with ${keyArg} ${q(key)} and the same arguments was answered with this result; nothing was applied again.\n${firstText?.text ?? ""}` }], _meta: meta };
   }
   const firstLine = (firstText?.text ?? "").split("\n")[0] ?? "";
-  const what = firstLine.replace(/^(Applied|Not applied|Partly applied|Outcome unknown|Accepted):\s*/, "").replace(/\.$/, "");
+  let what = firstLine.replace(/^(Applied|Not applied|Partly applied|Outcome unknown|Accepted):\s*/, "");
+  for (const tail of FIXED_TAILS) if (what.endsWith(tail)) what = what.slice(0, -tail.length);
+  what = what.trim().replace(/\.$/, "");
   const { mws: _m, ...own } = first.structuredContent as Record<string, unknown>;
   const replayed: WriteResult = { ...shape, replayed: true };
-  return { ...toToolResult(replayed, { summary: what || "the earlier call's write", notes: [note] }, own), _meta: meta };
+  return { ...toToolResult(replayed, { summary: what || "the earlier call's write", notes: [note], keyArgument: keyArg, key }, own), _meta: meta };
 }
 
 export interface KeyPropertyOptions {

@@ -46,7 +46,7 @@ canaries:
 review:
   by: the kit maintainers (rules written before the run)
   conflict_says_not_applied: "Nothing was changed"
-  conflict_says_reread: "read it again with"
+  conflict_says_reread: "read it with"
   stale_writes_disclosed: "stale delete is not detected|without a version check"
   rejection_gives_reason: "expected |must |is required|is not an argument"
 

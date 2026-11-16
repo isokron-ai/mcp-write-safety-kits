@@ -103,7 +103,8 @@ export function pointerOf(segments: Array<string | number>): string {
   return segments.map((s) => `/${String(s).replace(/~/g, "~0").replace(/\//g, "~1")}`).join("");
 }
 
-const str = (v: Scalar | undefined): string | undefined => (v === undefined ? undefined : String(v));
+// null and "" are treated as absent: B-9 never gives a member as null or a placeholder.
+const str = (v: Scalar | undefined | null): string | undefined => (v === undefined || v === null || v === "" ? undefined : String(v));
 
 /** An ObjectRef from values that may be numbers. */
 export function objectRef(o: { type?: string; id?: Scalar; version?: Scalar; scope?: Scalar }): ObjectRef {
@@ -134,11 +135,25 @@ export function assertShape(r: WriteResult): void {
   if (r.repeat === "yes" && (r.outcome === "unknown" || r.outcome === "partial" || r.outcome === "accepted")) {
     fail(`repeat "yes" is not allowed with outcome ${q(r.outcome)} (MWS-RES-2: an open outcome is repeated only after a read or with the key or version the call carried)`);
   }
+  if (r.repeat === "yes" && r.outcome === "applied" && r.operation === "delete") {
+    fail(`repeat "yes" is not allowed after an applied delete: a repeat can delete an object recreated in between`);
+  }
+  if (r.repeat === "read_first" && !r.read_with && !r.object?.id) {
+    fail(`repeat "read_first" names a read only with read_with or object.id: give readWith`);
+  }
   if (r.code !== undefined && !CODE.test(r.code)) fail(`code ${q(r.code)} must be lowercase letters, digits and underscores`);
   for (const it of r.items ?? []) {
     if (!Number.isInteger(it.index) || it.index < 0) fail(`items[].index must be an integer from 0`);
     if (!ITEM_OUTCOMES.includes(it.outcome)) fail(`items[].outcome ${q(it.outcome)} is not one of ${ITEM_OUTCOMES.map(q).join(", ")}`);
     if (it.code !== undefined && !CODE.test(it.code)) fail(`items[].code ${q(it.code)} must be lowercase letters, digits and underscores`);
+  }
+  if (r.outcome === "applied" || r.outcome === "not_applied") {
+    const outs = (r.items ?? []).map((i) => i.outcome);
+    if (outs.includes("unknown")) fail(`an item with an open outcome makes the whole outcome unknown, not ${r.outcome}`);
+    if (r.outcome === "not_applied" && outs.includes("applied")) fail("not_applied says no change is in effect; an applied item makes it partial");
+  }
+  if (r.conflict?.current_version !== undefined && (typeof r.conflict.current_version !== "string" || r.conflict.current_version === "")) {
+    fail("conflict.current_version is a non-empty string, or is left out");
   }
   if (r.applied_count !== undefined && (!Number.isInteger(r.applied_count) || r.applied_count < 0)) fail("applied_count must be a non-negative integer");
   if (r.outcome === "not_applied" && r.object?.version !== undefined) fail("on a refusal, object.version is left out (the current version goes in conflict.current_version)");
@@ -222,9 +237,11 @@ export function renderText(r: WriteResult, o: TextOptions): string {
   switch (r.repeat) {
     case "no":
       lines.push("Do not send the same call again.");
+      if (read) lines.push(`To see the current state, ${read}.`);
       break;
     case "yes":
       lines.push("The same call can be sent again unchanged; it cannot apply the write more than once.");
+      if (read) lines.push(`To see the current state, ${read}.`);
       break;
     case "same_key":
       lines.push(`Send the call again only with the same ${o.keyArgument ?? "idempotency key"}${o.key !== undefined ? ` ${q(o.key)}` : ""}${read ? `, or first ${read}` : ""}.`);
@@ -248,6 +265,14 @@ export function renderText(r: WriteResult, o: TextOptions): string {
 export function toToolResult(r: WriteResult, o: TextOptions, own: Record<string, unknown> = {}): CallToolResult {
   const shape = cleanShape(r);
   assertShape(shape);
+  // B-9: same_key and same_version name a guard only where the call carried it. A replay answers a
+  // call with the same arguments, so it carried the same key or version as the first.
+  if (!shape.replayed && shape.repeat === "same_key" && o.key === undefined) {
+    throw new TypeError(`write-result/0.1: repeat "same_key" only where the call carried an idempotency key: give key (and keyArgument)`);
+  }
+  if (!shape.replayed && shape.repeat === "same_version" && o.sentVersion === undefined) {
+    throw new TypeError(`write-result/0.1: repeat "same_version" only where the call carried a version: give sentVersion`);
+  }
   if (Object.prototype.hasOwnProperty.call(own, "mws")) throw new TypeError("the tool's own output must not have a member named mws");
   const structured = { ...own, mws: shape };
   return {
@@ -489,7 +514,7 @@ export function conflict(o: ConflictOptions): CallToolResult {
   const noun = o.type ?? "object";
   const summary = code === "locked"
     ? `${noun} ${q(String(o.id))} is locked${o.heldBy ? ` by ${q(o.heldBy)}` : ""}, so the write was refused`
-    : `${noun} ${q(String(o.id))} changed since the version you read${o.currentVersion !== undefined ? `; it is now at version ${q(o.currentVersion)}` : ""}`;
+    : `${noun} ${q(String(o.id))} changed since the version you read${str(o.currentVersion) !== undefined ? `; it is now at version ${q(o.currentVersion)}` : ""}`;
   return toToolResult({
     shape: SHAPE,
     outcome: "not_applied",
@@ -500,7 +525,7 @@ export function conflict(o: ConflictOptions): CallToolResult {
     message: sentence(summary),
     conflict: {
       current_version: str(o.currentVersion),
-      version_source: o.currentVersion !== undefined ? o.versionSource ?? "backend" : undefined,
+      version_source: str(o.currentVersion) !== undefined ? o.versionSource ?? "backend" : undefined,
       current_state: o.currentState,
       omitted: o.omitted?.map(pointer),
       held_by: o.heldBy,

@@ -167,6 +167,7 @@ export async function compareAndSet<S>(o: CompareAndSetOptions<S>): Promise<Call
       object,
       operation,
       what: `the ${operation} of ${type} ${q(String(o.id))} was sent and no answer arrived`,
+      whatOnError: `the ${operation} of ${type} ${q(String(o.id))} stopped with an error after it may have been sent`,
       guard: o.expectedVersion !== undefined ? { version: { arg, value: o.expectedVersion } } : undefined,
     });
   };

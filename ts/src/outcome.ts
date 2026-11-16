@@ -98,6 +98,29 @@ function codeOf(e: unknown): string | undefined {
   return undefined;
 }
 
+/** Error codes and names meaning the request may have been sent and its answer was lost. */
+const LOST_ANSWER_CODES = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNABORTED", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "ABORT_ERR"]);
+const LOST_ANSWER_NAMES = new Set(["TimeoutError", "AbortError"]);
+
+/**
+ * The code for an unknown outcome caused by `e`: "no_answer" (fixed by B-9: a request was sent and
+ * no answer arrived) only where the error says so (an OutcomeUnknownError, a timeout, a reset or
+ * closed connection), anywhere in its `cause` chain; otherwise "internal_error", a server code for
+ * a handler that failed after it may have written.
+ */
+export function unknownCode(e: unknown): string {
+  let cur: unknown = e;
+  for (let i = 0; i < 4 && cur && typeof cur === "object"; i++) {
+    if (cur instanceof OutcomeUnknownError) return "no_answer";
+    const c = (cur as { code?: unknown }).code;
+    if (typeof c === "string" && LOST_ANSWER_CODES.has(c)) return "no_answer";
+    const n = (cur as { name?: unknown }).name;
+    if (typeof n === "string" && LOST_ANSWER_NAMES.has(n)) return "no_answer";
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return "internal_error";
+}
+
 /** Classifies an error thrown while sending a write. See ErrorClass. */
 export function classifyError(e: unknown): ErrorClass {
   if (e instanceof NotAppliedError) return "refused";
@@ -115,6 +138,8 @@ export interface GuardWriteOptions {
   operation?: string;
   /** One sentence for an unknown outcome, e.g. `the update to note "n-3" was sent and no answer arrived`. */
   what: string;
+  /** The sentence where the error does not say that an answer was lost (code "internal_error"). Default: `what`. */
+  whatOnError?: string;
   /** What guards a repeat of this call, where anything does. */
   guard?: RepeatGuard;
 }
@@ -122,7 +147,8 @@ export interface GuardWriteOptions {
 /**
  * Runs a write and turns a thrown error into a truthful result: a NotAppliedError becomes
  * `not_applied` with its code; a request that was never sent becomes `not_applied` with code
- * `not_sent` and `repeat: "yes"`; anything else becomes `unknown` with code `no_answer`. The raw
+ * `not_sent` and `repeat: "yes"`; anything else becomes `unknown`, with code `no_answer` for a
+ * timeout or a lost connection and `internal_error` for any other error (see unknownCode). The raw
  * error message is never copied into the result (a client error can carry a URL with a token,
  * MWS-SEC-1); a NotAppliedError's message is, because the caller wrote it for this purpose.
  */
@@ -139,12 +165,14 @@ export async function guardWrite(write: () => Promise<CallToolResult>, o: GuardW
       return notApplied({ summary: "the backend could not be reached, so the request was not sent", code: "not_sent", repeat: "yes", object: o.object, operation: o.operation });
     }
     const code = codeOf(e);
+    const ucode = unknownCode(e);
     return unknownOutcome({
-      summary: o.what,
+      summary: ucode === "no_answer" ? o.what : o.whatOnError ?? o.what,
       readWith: o.readWith,
       object: o.object,
       operation: o.operation,
       guard: o.guard,
+      code: ucode,
       message: e instanceof OutcomeUnknownError ? e.message : code ? `error code ${code}` : undefined,
     });
   }

@@ -13,7 +13,7 @@ export {
 export { WRITE_RESULT_SCHEMA, outputSchemaFor, type OwnOutput } from "./schema.js";
 
 export {
-  unknownOutcome, guardWrite, classifyError, NotAppliedError, OutcomeUnknownError,
+  unknownOutcome, guardWrite, classifyError, unknownCode, NotAppliedError, OutcomeUnknownError,
   type UnknownOutcomeOptions, type RepeatGuard, type ErrorClass, type GuardWriteOptions,
 } from "./outcome.js";
 
