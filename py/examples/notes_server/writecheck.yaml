@@ -1,0 +1,116 @@
+# mcp-writecheck manifest for notes_server, the example built with mcp-write-safety-kit.
+#
+# The tester starts the server itself (streamable HTTP on a free loopback port; the first stdout line
+# is {"mcp": "..."}). The store lives in the server's memory: every run starts empty, nothing else
+# writes there, and every object in it is disposable.
+#
+#   pip install -e ../..          # the kit (and the MCP Python SDK) into the Python that runs `python`
+#   mcp-writecheck plan -m writecheck.yaml
+#   mcp-writecheck run  -m writecheck.yaml --confirm-target notes-server --plan-hash <hash>
+
+mws: "0.9"
+
+server:
+  launch:
+    command: [python, server.py]
+    url_from: mcp
+  cwd: .
+  # One server process serves every connection, so the second writer of a concurrency test sees the
+  # same store (a second process would have a store of its own).
+  processes: same
+
+target:
+  environment: test
+  confirm: notes-server
+  # list_notes declares readOnlyHint: true. The store starts empty, so the guard checks the shape.
+  guard: { tool: list_notes, args: {}, path: count, pattern: "^[0-9]+$" }
+
+limits: { write_budget: 5000, writes_per_second: 200, pairs: 40, stale_reps: 3, gate_reps: 2, timeout_ms: 15000, max_fuzz_cases: 200 }
+
+secrets:
+  token_params: [token, sig, signature, access_token]
+  issuing_tools: []                    # no tool exists to issue a credential (spec NF-16)
+
+canaries:
+  - { name: notes-count-type, tool: list_notes, args: { title_prefix: "no-such-prefix-" }, path: count }
+
+# Review-only clauses, answered in advance as rules over the captured text (recorded as self-attested).
+review:
+  by: the notes_server maintainers (rules written before the run)
+  conflict_says_not_applied: "Nothing was changed"
+  conflict_says_reread: "Before writing again, read with"
+  rejection_gives_reason: "expected |must |is required|is not an argument"
+  stale_writes_disclosed: "not detected|best-effort"
+
+# Spec 7.3, rule 11: how the kit words what a result says. Every write result carries
+# structuredContent.mws, the write-result shape 0.1 (MWS 0.9 draft Annex B-9). This CLI version cannot
+# adopt a shape by name and version, nor name a structured field for most kinds (only the replay
+# indicator, idempotency.replay_marker), so the patterns below match the first text block, whose
+# opening words the kit fixes from mws.outcome: "Applied:", "Not applied:", "Partly applied:",
+# "Outcome unknown:", "Accepted:".
+patterns:
+  not_applied: '^Not applied:|\bNothing was changed\b'
+  outcome_unknown: '^Outcome unknown:|\bIt is not known whether the change was applied\b'
+  applied: '^Applied:|^Partly applied:|\bItem [0-9]+ \("[^"]*"\): applied\b'
+  not_used: '\bwas not used\b'
+  in_progress: '\bis still in progress\b'
+  replay: '\brepeats an earlier call with the same idempotency key\b'
+  repeat_refused: '\bwas already used with different arguments\b'
+  unavailable: '\bcould not be reached\b'
+  earlier_failed: '(?!)'               # the kit never says this: a repeat answers with the first outcome
+  accepted: '^Accepted:'              # the kit emits it only for outcome accepted; no tool here does
+  no_tools: '(?!)'                     # no allow-list setting
+
+# Arguments for the tag tools, called on a scratch note by the annotation checks (MWS-ANN-1 to ANN-3, ANN-5).
+calls:
+  add_tag: { resource: note, args: { id: "{{id}}", tag: added } }
+  remove_tag: { resource: note, args: { id: "{{id}}", tag: a } }
+  delete_note: { resource: note, args: { id: "{{id}}", expected_version: "{{object.version}}" } }
+  delete_notes: { resource: note, args: { ids: ["{{id}}"], expected_versions: ["{{object.version}}"] } }
+
+resources:
+  - name: note
+    # Every optional field set to a value that is not its default, so that a reset shows (MWS-UPD-1).
+    create: { tool: create_note, args: { title: "{{marker}}", body: seeded, tags: [a, b, c] }, id: mws.object.id, name_path: title }
+    read: { tool: get_note, args: { id: "{{id}}" } }
+    update:
+      tool: update_note
+      mode: field_patch
+      args: { id: "{{id}}", "{{field}}": "{{value}}", expected_version: "{{version}}" }
+      # No update.cases: in this CLI version a declared case gets neither {{version}} nor {{object.version}}, and
+      # update_note needs the version, so a case would only be refused. The built-in empty_value step covers
+      # the "set a field to an empty value" call of MWS-RES-1.
+    fields:
+      - { path: body, values: [first body, second body], empty: "" }
+      - { path: tags, values: [[red], [blue, green]], empty: [] }
+    # The version (a string) is required by update_note and delete_note (no override argument).
+    version: { read: version, arg: expected_version }
+    delete: { tool: delete_note, args: { id: "{{id}}", expected_version: "{{version}}" } }
+    list: { tool: list_notes, args: { title_prefix: "{{prefix}}" }, items: notes, id: id, name: title }
+    missing_id: n-999999
+    cleanup: delete
+    # MWS-RETRY-2: create_note keeps keys in the server (mws_kit.Idempotency over InMemoryIdempotencyStore).
+    # The store is the backend here, in the same process: there is no backend key to fall back on, and
+    # the key record does not survive a restart (nor do the notes).
+    idempotency:
+      args: { title: "{{marker}}" }
+      key: { arg: idempotency_key }
+      id: mws.object.id
+      replay_marker: mws.replayed        # the shape's replay indicator (B-9: replayed: true)
+      backend_key: false
+      key_record_survives: { graceful: false, kill: false }
+    # MWS-ATOM-1, ATOM-2: an all-or-nothing delete of several notes. The declared call sets force (the
+    # explicit, off-by-default override of the per-note version check) because the tester passes ids only.
+    multi:
+      - tool: delete_notes
+        args: { ids: "{{ids}}", force: true }
+        effect: deleted
+        invalid_id: n-999999
+        # No `report` block: the shape lists every item in mws.items with an outcome of its own, and the
+        # CLI's report.applied path takes every entry of a list as applied.
+    # MWS-UPD-2: remove_tag addresses a tag by its value, which does not shift when the list changes. The
+    # CLI's list_edit block needs list elements that are objects (element.id and element.name are paths
+    # into an element); tags are plain strings, so the block is not declared and MWS-UPD-2 is not tested.
+    failures:
+      - { name: update_missing_note, tool: update_note, args: { id: "{{missing_id}}", expected_version: 1, body: x } }
+      - { name: delete_notes_missing, tool: delete_notes, args: { ids: ["{{missing_id}}"], force: true } }

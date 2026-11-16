@@ -5,3 +5,4 @@ build/
 dist/
 .venv/
 examples/notes_server/mwsc-results/
+examples/notes_server/.mwsc/
