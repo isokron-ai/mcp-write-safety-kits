@@ -244,4 +244,5 @@ def test_pointer_and_q():
 
 def test_shipped_schema_file_is_valid_2020_12():
     jsonschema.Draft202012Validator.check_schema(k.WRITE_RESULT_SCHEMA)
+    assert k.WRITE_RESULT_SCHEMA["properties"]["conflict"]["properties"]["current_version"] == {"type": "string"}
     assert k.WRITE_RESULT_SCHEMA["required"] == ["shape", "outcome"]

@@ -528,13 +528,13 @@ def conflict(
     ``"conflict"``; MWS-CONC-2, CONC-4, CONC-6) or because of a lock (``"locked"``; CONC-1).
 
     Carries the current state as JSON (only fields the caller may read through the read tool; list
-    whatever is left out in ``omitted``, as JSON Pointers) and the current version on its own,
-    never ``null``: leave ``current_version`` as None where the backend has none. ``repeat`` is
+    whatever is left out in ``omitted``, as JSON Pointers) and the current version on its own, as a
+    string, never ``null``: leave ``current_version`` as None where the backend has none. ``repeat`` is
     ``"read_first"``: the state in the result may stand in for the read where nothing is omitted.
     """
     c: dict[str, Any] = {}
     if current_version is not None:
-        c["current_version"] = current_version
+        c["current_version"] = str(current_version)  # a string, as every version in the shape
         if version_source is not None:
             c["version_source"] = version_source
     if current_state is not None:

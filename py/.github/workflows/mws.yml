@@ -84,6 +84,6 @@ jobs:
           mode: full
           fail-on: must
           confirm-target: notes-server
-          plan-hash: 726b2769d56a6dd5
+          plan-hash: 698ac7d5964f4596
           artifact-name: mws-results
           cli-token: ${{ secrets.MWS_CLI_TOKEN }}

@@ -69,7 +69,7 @@ def test_mismatch_is_a_conflict_nothing_written_current_state_carried():
     assert is_error_of(r)
     assert sh["outcome"] == "not_applied"
     assert sh["code"] == "conflict" and sh["repeat"] == "read_first"
-    assert sh["conflict"]["current_version"] == 2  # as the backend gives it, so it can be sent back
+    assert sh["conflict"]["current_version"] == "2"  # a string, as every version in the shape
     assert sh["conflict"]["version_source"] == "backend"
     assert sh["conflict"]["current_state"]["title"] == "other writer"
     assert sh["read_with"] == {"tool": "get_thing", "arguments": {"id": "a"}}
@@ -119,7 +119,7 @@ def test_backend_detected_conflict():
 
     g.read = stale_read
     r = g.apply("a", 1, {"title": "x"})
-    assert structured_of(r)["conflict"]["current_version"] == 9
+    assert structured_of(r)["conflict"]["current_version"] == "9"
 
 
 def test_lost_answer_is_unknown_with_version_guard():

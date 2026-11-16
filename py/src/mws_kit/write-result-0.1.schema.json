@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "write-result/0.1",
-  "description": "The value of structuredContent.mws in the result of a write tool (MWS 0.9 draft, Annex B-9). A draft: a later 0.y version may change it. Readers ignore members they do not know and members of the wrong type.",
+  "title": "MWS write-result 0.1 (draft, Annex B-9)",
+  "description": "The value of structuredContent.mws. Readers ignore members they do not know.",
   "type": "object",
   "required": [
     "shape",
@@ -119,10 +119,7 @@
       "type": "object",
       "properties": {
         "current_version": {
-          "type": [
-            "string",
-            "integer"
-          ]
+          "type": "string"
         },
         "version_source": {
           "enum": [
@@ -148,7 +145,8 @@
     "read_with": {
       "type": "object",
       "required": [
-        "tool"
+        "tool",
+        "arguments"
       ],
       "properties": {
         "tool": {
