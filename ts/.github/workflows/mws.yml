@@ -1,0 +1,76 @@
+# Runs mcp-writecheck (MWS 0.9) on examples/notes-server through the mcp-writecheck GitHub Action.
+#
+#   plan  on every pull request: builds the plan and its hash; calls no tool, writes nothing.
+#   full  on main and on demand: starts the example (in memory, on the runner) and runs the checks.
+#
+# The action fetches the mcp-writecheck repository, which is private for now: the token in
+# MWS_CLI_TOKEN is used for that one fetch and for nothing else.
+#
+# Before this runs:
+#   - pin the action to a full commit SHA (the reference below is a placeholder);
+#   - check the plan hash after any change to the example or its manifest: copy it from the plan
+#     job's summary into PLAN_HASH after reading the plan.
+
+name: mws
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MANIFEST: examples/notes-server/writecheck.yaml
+  # mcp-writecheck at the commit the example was tested against (0.1.0-dev.0, MWS 0.9).
+  CLI_REF: 0295ed6494d99ce5467f0d6e94e91a5c436a18c2
+  PLAN_HASH: 61ea10218337fa85
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build the kit and the example
+        run: |
+          npm ci && npm run build
+          cd examples/notes-server && npm ci && npm run build
+      - uses: isokron-ai/mcp-writecheck-action@0000000000000000000000000000000000000000 # placeholder: pin to a full commit SHA
+        with:
+          manifest: ${{ env.MANIFEST }}
+          mode: plan
+          cli-ref: ${{ env.CLI_REF }}
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          artifact-name: mws-plan
+
+  full:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: mws-notes-server
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build the kit and the example
+        run: |
+          npm ci && npm run build
+          cd examples/notes-server && npm ci && npm run build
+      - uses: isokron-ai/mcp-writecheck-action@0000000000000000000000000000000000000000 # placeholder: pin to a full commit SHA
+        with:
+          manifest: ${{ env.MANIFEST }}
+          mode: full
+          fail-on: must
+          confirm-target: notes-server
+          plan-hash: ${{ env.PLAN_HASH }}
+          cli-ref: ${{ env.CLI_REF }}
+          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
+          artifact-name: mws-results
