@@ -33,6 +33,8 @@ test("same key, same arguments: applied once; the repeat returns the first resul
   assert.equal(b.isError, undefined);
   assert.match(text(b), /^Applied: created note "n-1"\./);
   assert.match(text(b), /Replay: an earlier call with idempotency_key "key-0001" and the same arguments/);
+  assert.deepEqual(b._meta, { "mws/replay": true });
+  assert.equal(a._meta, undefined);
 });
 
 test("same key, different arguments: refused, nothing applied", async () => {

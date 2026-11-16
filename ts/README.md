@@ -107,7 +107,7 @@ Every result the kit builds for a write carries this object in `structuredConten
 | `Not applied in full:` | `not_applied`, with items that remain applied, each listed |
 | `Outcome unknown:` | `unknown`; the sentence ends "It is not known whether the change was applied." |
 
-A replayed result (same idempotency key, same arguments) adds a line that starts `Replay:`. The shape has no replay field.
+A replayed result (same idempotency key, same arguments) adds a line that starts `Replay:` and carries `_meta: {"mws/replay": true}`. The shape itself has no replay field.
 
 ## Helpers
 
@@ -135,7 +135,7 @@ handler: (args) => withIdempotency({ store, scope: "create_note", args, settleWi
 }),
 ```
 
-- The same key with the same arguments returns the first call's result, with `changed: []` and a `Replay:` line, and applies nothing new.
+- The same key with the same arguments returns the first call's result, with `changed: []`, a `Replay:` line and `_meta["mws/replay"]: true`, and applies nothing new.
 - The same key with different arguments is refused; nothing is applied.
 - Two calls with the same key at the same time never both write. The second waits for the first and then gets its result (`concurrent: "wait"`, the default), or is refused as still in progress (`concurrent: "refuse"`).
 - A first call that applied nothing releases its key, so a later call with the key is a new attempt. A first call whose outcome is unknown (or that threw) keeps the key: a repeat applies nothing and says the outcome is not known, naming the read that settles it.

@@ -21,7 +21,7 @@ export {
 } from "./version-check.js";
 
 export {
-  MemoryIdempotencyStore, withIdempotency, replayOf, canonicalJson, fingerprintOf, idempotencyKeyDescription, idempotencyKeyProperty,
+  MemoryIdempotencyStore, withIdempotency, replayOf, REPLAY_META_KEY, canonicalJson, fingerprintOf, idempotencyKeyDescription, idempotencyKeyProperty,
   type IdempotencyStore, type BeginResult, type MemoryStoreOptions, type IdempotencyOptions, type KeyPropertyOptions,
 } from "./idempotency.js";
 

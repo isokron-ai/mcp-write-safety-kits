@@ -235,9 +235,13 @@ export async function withIdempotency(o: IdempotencyOptions, write: () => Promis
   }
 }
 
+/** The `_meta` key that marks a replayed result. Not part of shape v0, which has no replay field. */
+export const REPLAY_META_KEY = "mws/replay";
+
 /**
  * The first call's result, marked as a replay: the same object, version and outcome, with an empty
- * list of changed fields (this call changed nothing) and a sentence that says it is a replay.
+ * list of changed fields (this call changed nothing), a sentence that starts "Replay:", and
+ * `_meta["mws/replay"]: true`.
  */
 export function replayOf(first: CallToolResult, keyArg: string, key: string): CallToolResult {
   const shape = readResult(first);
@@ -245,11 +249,12 @@ export function replayOf(first: CallToolResult, keyArg: string, key: string): Ca
   const firstLine = (firstText?.text ?? "").split("\n")[0] ?? "";
   const what = firstLine.replace(/^(Applied|Not applied in full|Not applied|Outcome unknown):\s*/, "").replace(/\.$/, "");
   const replaySentence = `Replay: an earlier call with ${keyArg} ${q(key)} and the same arguments was answered with this result; this call applied nothing new`;
+  const meta = { ...(first._meta ?? {}), [REPLAY_META_KEY]: true };
   if (!shape) {
-    return { ...first, content: [{ type: "text", text: `${replaySentence}.\n${firstText?.text ?? ""}` }] };
+    return { ...first, content: [{ type: "text", text: `${replaySentence}.\n${firstText?.text ?? ""}` }], _meta: meta };
   }
   const replayed: MwsResult = { ...shape, ...(shape.changed ? { changed: [] } : {}) };
-  return toToolResult(replayed, { summary: what || "the earlier call's write", notes: [replaySentence] });
+  return { ...toToolResult(replayed, { summary: what || "the earlier call's write", notes: [replaySentence] }), _meta: meta };
 }
 
 export interface KeyPropertyOptions {
