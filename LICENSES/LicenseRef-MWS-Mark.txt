@@ -1,0 +1,17 @@
+The MWS name and mark
+
+The MWS mark (the symbol used on the project's repositories, packages and
+social accounts) and the name "MCP Write-Safety Requirements" belong to
+Stormhaven Enterprises LLC, doing business as IsoKron. The mark is not
+covered by the CC BY 4.0 licence of the specification text or by the Apache
+License 2.0 of the software. Anyone may use the unmodified mark to refer to
+the specification, for example next to a link to it, in an article, talk or
+list of standards, or in a tool that tests against it, provided the use does
+not suggest that a product, server, service or organisation has passed,
+complies with, is certified under or is endorsed by MWS or IsoKron. Do not
+place the mark on or next to a product, server, package or result; do not use
+it as a badge or in a README badge row; do not combine it with your own name
+or logo; and do not alter it. To say that a server was tested, use the
+sentence in section 15.5 of the specification, without the mark. IsoKron
+approves, certifies and endorses nothing. Other uses: ask by an issue in the
+specification repository, https://github.com/isokron-ai/mcp-write-safety.

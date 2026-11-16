@@ -15,6 +15,7 @@ LICENSE-schema.md note beside each.
 The documentation refers to requirement IDs of the MCP Write-Safety Requirements
 (MWS), version 0.9, Joshua Bryan, IsoKron, licensed under CC BY 4.0.
 
-The MCP Write-Safety Requirements mark in assets/ is licensed under CC BY 4.0. It may
-be used to say which version of the requirements a server was tested against; it may
-not be used in a way that implies approval or certification.
+The MWS mark in assets/ is not covered by the Apache License 2.0 or by CC BY 4.0.
+All rights are reserved by Stormhaven Enterprises LLC, doing business as IsoKron;
+its use is described in LICENSES/LicenseRef-MWS-Mark.txt and in the specification's
+TRADEMARKS.md (https://github.com/isokron-ai/mcp-write-safety/blob/main/TRADEMARKS.md).

@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+<sub>The MWS mark is not covered by this repository's licence; its use is described in the specification's <a href="https://github.com/isokron-ai/mcp-write-safety/blob/main/TRADEMARKS.md">TRADEMARKS.md</a>.</sub>
+
 # MCP Write-Safety kits
 
 Helper libraries for the write tools of an MCP server, in TypeScript and Python. They cover the parts of the MCP Write-Safety Requirements that are easy to get wrong by hand.

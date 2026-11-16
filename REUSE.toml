@@ -1,0 +1,11 @@
+version = 1
+
+# The MWS mark (logo artwork, SVG and PNG) in assets/. It is not under the
+# Apache License 2.0 of this repository or under CC BY 4.0; its use is
+# described in the specification's TRADEMARKS.md and in
+# LICENSES/LicenseRef-MWS-Mark.txt. Only the mark files are annotated here.
+[[annotations]]
+path = ["**/mws-mark*.svg", "**/mws-mark*.png"]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Stormhaven Enterprises LLC, doing business as IsoKron"
+SPDX-License-Identifier = "LicenseRef-MWS-Mark"
