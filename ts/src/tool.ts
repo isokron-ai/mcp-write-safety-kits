@@ -5,7 +5,7 @@
 import { readOnlyHints, writeHints, type ExplicitAnnotations, type ReadToolHints, type WriteToolHints } from "./annotations.js";
 import { guardWrite } from "./outcome.js";
 import { notApplied, q, type ReadWith } from "./result.js";
-import { inputError, strictInput, type JsonSchema } from "./strict-input.js";
+import { strictInput, type JsonSchema } from "./strict-input.js";
 import type { CallToolResult, MaybePromise, Tool } from "./types.js";
 
 interface ToolBase<A> {
@@ -34,8 +34,9 @@ export interface WriteToolSpec<A> extends ToolBase<A> {
    */
   readWith(args: A): ReadWith;
   /**
-   * The argument that takes the version, where the schema requires it. A call refused only because
-   * it left this argument out gets code "version_required" (NF-3) instead of "invalid_argument".
+   * The argument that takes the version, where the schema requires it. Inferred from the schema
+   * when left out (a single required argument named like `expected_version`). A call that leaves it
+   * out gets code "version_required" (NF-3), which takes precedence over "invalid_argument".
    */
   versionArgument?: string;
 }
@@ -52,7 +53,7 @@ export interface DefinedTool {
 
 /** Defines a tool. Throws SchemaError when the input schema uses a keyword the validator does not enforce. */
 export function defineTool<A = Record<string, unknown>>(spec: ToolSpec<A>): DefinedTool {
-  const input = strictInput(spec.inputSchema);
+  const input = strictInput(spec.inputSchema, { versionArgument: spec.kind === "write" ? spec.versionArgument : undefined });
   const annotations = spec.kind === "read" ? readOnlyHints(spec.hints) : writeHints(spec.hints);
   const definition = {
     name: spec.name,
@@ -67,21 +68,15 @@ export function defineTool<A = Record<string, unknown>>(spec: ToolSpec<A>): Defi
     definition,
     async call(args, extra) {
       const v = input.validate(args);
-      if (!v.ok) {
-        const va = spec.kind === "write" ? spec.versionArgument : undefined;
-        if (va && v.issues.length === 1 && v.issues[0]!.path === va && v.issues[0]!.sent === "nothing") {
-          return inputError(v.issues, { code: "version_required" });
-        }
-        return v.result;
-      }
+      if (!v.ok) return v.result;
       const run = async () => spec.handler(v.value as A, extra);
       if (spec.kind === "write") {
-        return guardWrite(run, { readWith: spec.readWith(v.value as A), what: `the call to ${q(spec.name)} stopped before it could report what it wrote` });
+        return guardWrite(run, { readWith: spec.readWith(v.value as A), what: `the call to ${q(spec.name)}` });
       }
       try {
         return await run();
       } catch {
-        return notApplied({ summary: `${q(spec.name)} could not read: an internal error occurred`, code: "internal_error" });
+        return notApplied({ summary: `${q(spec.name)} could not read: a fault in the server`, code: "read_failed" });
       }
     },
   };

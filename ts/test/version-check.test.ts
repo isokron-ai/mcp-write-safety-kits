@@ -29,7 +29,8 @@ test("matching version: applied, receipt with the new version and changed fields
   const r = await s.cas("d1", 1, "b");
   const sh = readResult(r)!;
   assert.equal(sh.outcome, "applied");
-  assert.deepEqual(sh.object, { type: "doc", id: "d1", version: "2" });
+  assert.deepEqual(sh.object, { type: "doc", id: "d1", version: 2 });
+  assert.equal(sh.repeat, "same_version", "the call carried a version");
   assert.deepEqual(sh.changed, ["/title"]);
   assert.equal(sh.operation, "update");
   assert.equal(sh.version_argument, "expected_version");
@@ -43,7 +44,8 @@ test("stale version: conflict, nothing written, current version and the allowed 
   assert.deepEqual(s.writes, ["b"]);
   const sh = readResult(r)!;
   assert.equal(sh.outcome, "not_applied");
-  assert.deepEqual(sh.conflict, { current_version: "2", version_source: "backend", current_state: { title: "b", tags: ["x"] } });
+  assert.deepEqual(sh.conflict, { current_version: 2, checked_by: "server", current_state: { title: "b", tags: ["x"] } });
+  assert.match(text(r), /^Not applied: doc "d1" changed since version 1\. Nothing was changed\./);
   assert.equal(sh.code, "conflict");
   assert.equal(sh.repeat, "read_first");
   assert.match(text(r), /Nothing was changed/);
@@ -56,7 +58,7 @@ test("by default a conflict carries no state: read_first with read_with, nothing
     read: () => docs.get("d1"), write: () => ({ version: 3 }),
   });
   const sh = readResult(r)!;
-  assert.deepEqual(sh.conflict, { current_version: "2", version_source: "backend" });
+  assert.deepEqual(sh.conflict, { current_version: 2, checked_by: "server" });
   assert.equal(sh.repeat, "read_first");
   assert.deepEqual(sh.read_with, { tool: "get_doc", arguments: { id: "d1" } });
   assert.doesNotMatch(JSON.stringify(r), /SECRET/);
@@ -70,7 +72,7 @@ test("an allow-list carries only the listed fields and names the rest in omitted
     conflictFields: ["title"],
   });
   const sh = readResult(r)!;
-  assert.deepEqual(sh.conflict, { current_version: "2", version_source: "backend", current_state: { title: "b" }, omitted: ["/api_token"] });
+  assert.deepEqual(sh.conflict, { current_version: 2, checked_by: "server", current_state: { title: "b" }, omitted: ["/api_token"] });
   assert.doesNotMatch(JSON.stringify(r), /SECRET/);
 });
 
@@ -116,7 +118,7 @@ test("a backend version refusal becomes the same conflict", async () => {
     write: () => { throw new VersionConflictError({ version: 5, state: { title: "z" } }); },
     conflictFields: ["title", "tags"],
   });
-  assert.deepEqual(readResult(r)!.conflict, { current_version: "5", version_source: "backend", current_state: { title: "z" } });
+  assert.deepEqual(readResult(r)!.conflict, { current_version: 5, checked_by: "backend", current_state: { title: "z" } });
 });
 
 test("a write that throws is an unknown outcome, safe to repeat with the version it carried", async () => {

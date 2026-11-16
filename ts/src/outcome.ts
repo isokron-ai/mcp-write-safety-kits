@@ -7,7 +7,7 @@
 // settles it, and a `repeat` that MWS-RES-2 allows: `read_first`, or `same_key` / `same_version`
 // where the call carried an idempotency key or a version that guards the repeat. Never `yes`.
 
-import { SHAPE, notApplied, objectRef, toToolResult, type ReadWith, type Repeat, type Scalar } from "./result.js";
+import { SHAPE, notApplied, toToolResult, type ObjectRef, type ReadWith, type Repeat, type Idv } from "./result.js";
 import type { CallToolResult } from "./types.js";
 
 /** What guards a repeat of the same call: the idempotency key or the version it carried. */
@@ -15,7 +15,7 @@ export interface RepeatGuard {
   /** The argument and value of the idempotency key the call carried, where the server honours it. */
   idempotencyKey?: { arg: string; value: string };
   /** The argument and value of the version the call carried, where a repeat that finds the write applied is refused. */
-  version?: { arg: string; value: Scalar };
+  version?: { arg: string; value: Idv };
 }
 
 export interface UnknownOutcomeOptions {
@@ -24,12 +24,14 @@ export interface UnknownOutcomeOptions {
   /** The read that shows whether the write took effect (required). */
   readWith: ReadWith;
   /** The object the write was for, where known. */
-  object?: { type?: string; id?: Scalar; scope?: Scalar };
+  object?: Omit<ObjectRef, "version">;
   operation?: string;
   /** What makes a repeat safe. Without one, `repeat` is "read_first". */
   guard?: RepeatGuard;
-  /** The code. Default "no_answer". */
+  /** The code: "no_answer" (default), "backend_error", "internal_error", "in_progress", "key_not_known", or the server's own. */
   code?: string;
+  /** True where this call applied nothing itself and the answer describes an earlier call with the same key. */
+  replayed?: boolean;
   /** The reason in words ("timeout after 30 s", "connection reset"). Never a request with credentials. */
   message?: string;
   notes?: string[];
@@ -45,7 +47,8 @@ export function unknownOutcome(o: UnknownOutcomeOptions): CallToolResult {
     outcome: "unknown",
     repeat,
     operation: o.operation,
-    object: o.object ? objectRef(o.object) : undefined,
+    object: o.object,
+    replayed: o.replayed ? true : undefined,
     code: o.code ?? "no_answer",
     message: o.message,
     read_with: o.readWith,
@@ -62,7 +65,7 @@ export function unknownOutcome(o: UnknownOutcomeOptions): CallToolResult {
 /** Thrown by a write callback when the backend refused the write: nothing was applied. */
 export class NotAppliedError extends Error {
   override readonly name = "NotAppliedError";
-  constructor(message: string, readonly detail: { code?: string; object?: { type?: string; id?: Scalar }; argument?: string } = {}) {
+  constructor(message: string, readonly detail: { code?: string; object?: Omit<ObjectRef, "version">; argument?: string } = {}) {
     super(message);
   }
 }
@@ -78,15 +81,20 @@ export class OutcomeUnknownError extends Error {
 /**
  * How a thrown error bears on a write that was being sent:
  *
- *   "refused"   the backend refused it (a NotAppliedError): settled, nothing applied
- *   "not_sent"  the request was never sent (connection refused, name not resolved)
- *   "unknown"   the request may have been sent and no answer arrived, or the error is not
- *               recognised (the cautious reading: never report "not applied" when unsure)
+ *   "refused"         the backend refused it (a NotAppliedError): settled, nothing applied
+ *   "not_sent"        the request was never sent (connection refused, name not resolved)
+ *   "no_answer"       the request was sent, or may have been, and no answer arrived (a reset or
+ *                     closed connection, a timeout, an OutcomeUnknownError)
+ *   "internal_error"  anything else: a fault in the server itself, after a write may have been
+ *                     sent (the cautious reading: never "not applied" when unsure)
  */
-export type ErrorClass = "refused" | "not_sent" | "unknown";
+export type ErrorClass = "refused" | "not_sent" | "no_answer" | "internal_error";
 
 /** Error codes meaning the request was not sent: the connection was never made. */
 const NOT_SENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ERR_INVALID_URL", "UND_ERR_CONNECT_TIMEOUT"]);
+/** Error codes and names meaning a request was sent, or may have been, and its answer was lost. */
+const NO_ANSWER_CODES = new Set(["ECONNRESET", "ETIMEDOUT", "EPIPE", "ECONNABORTED", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_CLOSED", "ABORT_ERR"]);
+const NO_ANSWER_NAMES = new Set(["AbortError", "TimeoutError"]);
 
 function codeOf(e: unknown): string | undefined {
   let cur: unknown = e;
@@ -125,33 +133,36 @@ export function unknownCode(e: unknown): string {
 /** Classifies an error thrown while sending a write. See ErrorClass. */
 export function classifyError(e: unknown): ErrorClass {
   if (e instanceof NotAppliedError) return "refused";
-  if (e instanceof OutcomeUnknownError) return "unknown";
+  if (e instanceof OutcomeUnknownError) return "no_answer";
   const code = codeOf(e);
   if (code && NOT_SENT_CODES.has(code)) return "not_sent";
-  return "unknown";
+  if ((code && NO_ANSWER_CODES.has(code)) || (e instanceof Error && NO_ANSWER_NAMES.has(e.name))) return "no_answer";
+  return "internal_error";
 }
 
 export interface GuardWriteOptions {
   /** The read that settles an unknown outcome. */
   readWith: ReadWith;
   /** The object, for the result. */
-  object?: { type?: string; id?: Scalar; scope?: Scalar };
+  object?: Omit<ObjectRef, "version">;
   operation?: string;
-  /** One sentence for an unknown outcome, e.g. `the update to note "n-3" was sent and no answer arrived`. */
+  /** The write, as the subject of a sentence: `the update of note "n-3"`. */
   what: string;
-  /** The sentence where the error does not say that an answer was lost (code "internal_error"). Default: `what`. */
-  whatOnError?: string;
   /** What guards a repeat of this call, where anything does. */
   guard?: RepeatGuard;
 }
 
 /**
- * Runs a write and turns a thrown error into a truthful result: a NotAppliedError becomes
- * `not_applied` with its code; a request that was never sent becomes `not_applied` with code
- * `not_sent` and `repeat: "yes"`; anything else becomes `unknown`, with code `no_answer` for a
- * timeout or a lost connection and `internal_error` for any other error (see unknownCode). The raw
- * error message is never copied into the result (a client error can carry a URL with a token,
- * MWS-SEC-1); a NotAppliedError's message is, because the caller wrote it for this purpose.
+ * Runs a write and turns a thrown error into a truthful result:
+ *
+ *   - a NotAppliedError becomes `not_applied` with its code;
+ *   - a request that was never sent becomes `not_applied`, `code: "not_sent"`, `repeat: "yes"`;
+ *   - a lost answer (a timeout, a reset or closed connection, an OutcomeUnknownError) becomes
+ *     `unknown`, `code: "no_answer"` (see unknownCode; an abort is not a lost answer);
+ *   - anything else becomes `unknown`, `code: "internal_error"`.
+ *
+ * The raw error message is never copied into the result (a client error can carry a URL with a
+ * token, MWS-SEC-1); a NotAppliedError's message is, because the caller wrote it for this purpose.
  */
 export async function guardWrite(write: () => Promise<CallToolResult>, o: GuardWriteOptions): Promise<CallToolResult> {
   try {
@@ -168,13 +179,13 @@ export async function guardWrite(write: () => Promise<CallToolResult>, o: GuardW
     const code = codeOf(e);
     const ucode = unknownCode(e);
     return unknownOutcome({
-      summary: ucode === "no_answer" ? o.what : o.whatOnError ?? o.what,
+      summary: ucode === "no_answer" ? `${o.what} was sent and no answer arrived` : `${o.what} stopped on a fault in the server after it may have been sent`,
       readWith: o.readWith,
       object: o.object,
       operation: o.operation,
       guard: o.guard,
       code: ucode,
-      message: e instanceof OutcomeUnknownError ? e.message : code ? `error code ${code}` : undefined,
+      message: e instanceof OutcomeUnknownError ? e.message : ucode === "no_answer" ? (code ? `error code ${code}` : "no answer arrived") : "a fault in the server",
     });
   }
 }

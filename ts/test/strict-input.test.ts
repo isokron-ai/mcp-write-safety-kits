@@ -144,3 +144,24 @@ test("a free-form object must say additionalProperties: true; otherwise it is cl
   const open = strictInput({ type: "object", properties: { meta: { type: "object", additionalProperties: true } } });
   assert.ok(open.validate({ meta: { a: 1 } }).ok);
 });
+
+test("argument_errors lists every refused argument; argument names the first", () => {
+  const v = s.validate({ id: "a", priority: "5", asignee: "x" });
+  assert.ok(!v.ok);
+  const sh = readResult(v.result)!;
+  assert.equal(sh.argument, "/priority");
+  assert.deepEqual(sh.argument_errors!.map((e) => [e.argument, e.code]), [["/priority", "invalid_argument"], ["/asignee", "invalid_argument"]]);
+  assert.match(sh.argument_errors![1]!.message!, /^Argument "asignee" is not an argument of this tool/);
+});
+
+test("a missing required version argument is version_required, inferred from the schema, and takes precedence", () => {
+  const t = strictInput({ type: "object", properties: { id: { type: "string" }, expected_version: { type: "integer" }, title: { type: "string" } }, required: ["id", "expected_version"] });
+  const v = t.validate({ id: "a", title: 5 });
+  assert.ok(!v.ok);
+  const sh = readResult(v.result)!;
+  assert.equal(sh.code, "version_required");
+  assert.equal(sh.argument, "/expected_version");
+  assert.deepEqual(sh.argument_errors!.map((e) => e.code), ["version_required", "invalid_argument"]);
+  const w = t.validate({ id: "a", expected_version: "1" });
+  assert.equal(!w.ok && readResult(w.result)!.code, "invalid_argument", "a version of the wrong type is invalid, not missing");
+});

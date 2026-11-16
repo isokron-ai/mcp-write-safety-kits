@@ -168,7 +168,6 @@ export function buildTools(store: NotesStore): ToolSet {
     },
     hints: { destructive: true, idempotent: true, openWorld: false },
     readWith: (a) => readNote(a.id),
-    versionArgument: "expected_version",
     outputSchema: WRITE_OUTPUT,
     handler: ({ id, expected_version, ...fields }) => compareAndSet<Note>({
       id,
@@ -195,7 +194,6 @@ export function buildTools(store: NotesStore): ToolSet {
     inputSchema: { type: "object", properties: { id: NOTE_ID, expected_version: VERSION }, required: ["id", "expected_version"] },
     hints: { destructive: true, idempotent: true, openWorld: false },
     readWith: (a) => readNote(a.id),
-    versionArgument: "expected_version",
     outputSchema: WRITE_OUTPUT,
     handler: ({ id, expected_version }) => compareAndSet<Note>({
       id,
@@ -291,18 +289,20 @@ export function buildTools(store: NotesStore): ToolSet {
               const r = reasons.get(id);
               return r ? { index, id, outcome: "not_applied" as const, ...r } : { index, id, outcome: "not_attempted" as const, message: "not deleted: another item failed and the batch is all or nothing" };
             }),
-            code: "invalid_item",
             readWith: readNotes(notebook),
           });
         }
       }
       const matched = store.listNotes({ notebook, title_prefix, tag, ids });
       for (const n of matched) store.deleteNote(n.id);
+      // A list of ids: one item per listed id, by index. A selector: the count, and the ids deleted.
       return itemsResult({
         summary: `deleted ${matched.length} note(s) from notebook ${q(notebook)}`,
         operation: "delete",
         object: { type: "note", scope: notebook },
-        items: matched.map((n, index) => ({ index, id: n.id, version: String(n.version), outcome: "applied" as const })),
+        items: ids
+          ? ids.map((id, index) => ({ index, id, version: matched.find((n) => n.id === id)!.version, outcome: "applied" as const }))
+          : matched.map((n) => ({ id: n.id, version: n.version, outcome: "applied" as const })),
         appliedCount: matched.length,
         readWith: readNotes(notebook),
       });

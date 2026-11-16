@@ -22,10 +22,12 @@ test("update_note: receipt, then a conflict for a stale version that carries the
   const c = readResult(await tools.call("create_note", { title: "t", tags: ["a"] }))!;
   const id = c.object!.id;
   const u = await tools.call("update_note", { id, expected_version: 1, body: "x" });
-  assert.deepEqual(readResult(u), { shape: "write-result/0.1", outcome: "applied", repeat: "no", operation: "update", object: { type: "note", id, version: "2" }, changed: ["/body"], read_with: { tool: "get_note", arguments: { id } }, version_argument: "expected_version" });
+  assert.deepEqual(readResult(u), { shape: "write-result/0.1", outcome: "applied", repeat: "same_version", operation: "update", object: { type: "note", id, version: 2 }, changed: ["/body"], read_with: { tool: "get_note", arguments: { id } }, version_argument: "expected_version" });
   const stale = await tools.call("update_note", { id, expected_version: 1, status: "archived" });
   assert.equal(stale.isError, true);
-  assert.equal(readResult(stale)!.conflict!.current_version, "2");
+  assert.equal(readResult(stale)!.conflict!.current_version, 2);
+  assert.equal(readResult(stale)!.conflict!.checked_by, "server");
+  assert.equal(readResult(stale)!.repeat, "read_first");
   assert.equal((readResult(stale)!.conflict!.current_state as { body: string }).body, "x");
 });
 
@@ -45,6 +47,8 @@ test("create_note with a key is applied once", async () => {
   assert.equal(store.notes.size, 1);
   assert.deepEqual(readResult(b)!.object, readResult(a)!.object);
   assert.equal(readResult(b)!.replayed, true);
+  assert.equal(readResult(b)!.repeat, "same_key");
+  assert.deepEqual(readResult(a)!.changed, ["/title"], "a create lists the fields set, not the scope argument");
   const c = await tools.call("create_note", { title: "other", idempotency_key: "key-00000001" });
   assert.equal(c.isError, true);
   assert.equal(store.notes.size, 1);
@@ -62,6 +66,7 @@ test("delete_notes: a selector is required, and a bad id deletes nothing and nam
   assert.equal(store.notes.size, 2);
   assert.deepEqual(readResult(bad)!.items!.map((i) => [i.id, i.outcome]), [["n-1", "not_attempted"], ["n-99", "not_applied"], ["n-2", "not_attempted"]]);
   assert.equal(readResult(bad)!.outcome, "not_applied");
+  assert.equal(readResult(bad)!.code, "not_found", "the top-level code is the bad item's");
   const ok = await tools.call("delete_notes", { notebook: "inbox", ids: ["n-1", "n-2"] });
   assert.deepEqual(readResult(ok)!.items!.map((x) => x.id), ["n-1", "n-2"]);
   assert.equal(readResult(ok)!.applied_count, 2);

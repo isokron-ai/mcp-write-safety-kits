@@ -32,6 +32,8 @@ test("same key, same arguments: applied once; the repeat returns the first resul
   assert.deepEqual(sb.changed, sa.changed, "the first call's outcome, as it was");
   assert.equal(sb.replayed, true);
   assert.equal(sa.replayed, undefined);
+  assert.equal(sa.repeat, "same_key", "a keyed applied answer");
+  assert.equal(sb.repeat, "same_key");
   assert.equal(b.isError, undefined);
   assert.match(text(b), /^Applied: created note "n-1"\./);
   assert.match(text(b), /^Replay: this call repeats an earlier call/m);
@@ -68,7 +70,8 @@ test("concurrent calls with the same key never write twice (the second waits and
   const h = harness();
   const rs = await Promise.all(Array.from({ length: 10 }, () => h.create({ title: "t", idempotency_key: "key-0005" }, { delayMs: 10 })));
   assert.deepEqual(h.created, ["n-1"]);
-  for (const r of rs) assert.deepEqual(readResult(r)!.object, { id: "n-1", version: "1" });
+  for (const r of rs) assert.deepEqual(readResult(r)!.object, { id: "n-1", version: 1 });
+  for (const r of rs) assert.equal(readResult(r)!.repeat, "same_key");
   assert.equal(rs.filter((r) => readResult(r)!.replayed).length, 9);
 });
 
@@ -85,7 +88,7 @@ test("concurrent calls with concurrent: refuse: the second is refused as in prog
   assert.equal(readResult(a)!.outcome, "applied");
   assert.equal(b.isError, true);
   assert.match(text(b), /still in progress; this call applied nothing/);
-  assert.equal(readResult(b)!.code, "in_progress");
+  assert.deepEqual([readResult(b)!.outcome, readResult(b)!.code, readResult(b)!.repeat, readResult(b)!.replayed], ["unknown", "in_progress", "same_key", true]);
 });
 
 test("a refused first call releases the key: the repeat is a new attempt", async () => {
@@ -100,16 +103,21 @@ test("a refused first call releases the key: the repeat is a new attempt", async
 test("an unknown first outcome: the repeat applies nothing and says the outcome is not known", async () => {
   for (const fail of ["unknown", "throw"] as const) {
     const h = harness();
-    if (fail === "throw") await assert.rejects(h.create({ title: "t", idempotency_key: "key-0008" }, { fail }));
-    else await h.create({ title: "t", idempotency_key: "key-0008" }, { fail });
+    const first = await h.create({ title: "t", idempotency_key: "key-0008" }, { fail });
+    assert.equal(readResult(first)!.outcome, "unknown");
+    assert.equal(readResult(first)!.repeat, "read_first", "a same_key repeat would only replay the open answer");
+    assert.match(text(first), /send it again with a new idempotency_key/);
+    assert.equal(readResult(first)!.replayed, undefined);
     const r = await h.create({ title: "t", idempotency_key: "key-0008" });
     assert.deepEqual(h.created, []);
     const s = readResult(r)!;
     assert.equal(s.outcome, "unknown");
     assert.equal(s.repeat, "read_first");
+    assert.equal(s.replayed, true);
+    assert.equal(s.code, fail === "throw" ? "internal_error" : "no_answer");
     assert.equal(s.read_with!.tool, "list_notes");
     assert.match(text(r), /It is not known whether the change was applied/);
-    assert.match(text(r), /this call applied nothing/);
+    assert.match(text(r), /^Replay: this call repeats an earlier call/m);
   }
 });
 

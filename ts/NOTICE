@@ -12,10 +12,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
+One file is not under the Apache License: schema/write-result-0.1.schema.json is the JSON Schema
+of the write-result shape published with the MCP Write-Safety Requirements, version 0.9, Annex B,
+B-9 (spec/shapes/write-result-0.1.schema.json), and is licensed under CC BY 4.0
+(https://creativecommons.org/licenses/by/4.0/). Attribution: "MCP Write-Safety Requirements,
+version 0.9, Joshua Bryan, IsoKron, CC BY 4.0". See schema/LICENSE-schema.md.
+
 The documentation refers to requirement IDs of the MCP Write-Safety Requirements
 (MWS), version 0.9, Joshua Bryan, IsoKron, licensed under CC BY 4.0
 (https://creativecommons.org/licenses/by/4.0/). The kit adds no requirement; the
 specification is the reference.
-
-The file schema/write-result-0.1.schema.json is licensed under CC BY 4.0, not Apache-2.0; see
-schema/LICENSE-schema.md.

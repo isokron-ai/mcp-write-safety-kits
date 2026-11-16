@@ -17,7 +17,7 @@
 // defined, not at call time: a keyword the validator ignored would be a constraint the tool
 // advertises and does not enforce.
 
-import { notApplied, pointerOf, q, type Scalar } from "./result.js";
+import { notApplied, pointer, pointerOf, q, type ObjectRef } from "./result.js";
 import type { CallToolResult } from "./types.js";
 
 /** The JSON Schema subset the validator enforces. */
@@ -307,34 +307,58 @@ export function describeIssue(i: InputIssue): string {
 
 /** Options for inputError. */
 export interface InputErrorOptions {
-  /** Default "invalid_argument"; "version_required" for a missing version (NF-3). */
+  /** The top-level code. Default: "version_required" where the version argument is missing, else "invalid_argument". */
   code?: string;
-  object?: { type?: string; id?: Scalar };
+  /** The argument that takes the version (top-level name). A missing version gets "version_required" (NF-3), which takes precedence. */
+  versionArgument?: string;
+  object?: Omit<ObjectRef, "version">;
   operation?: string;
 }
 
+/** The code of one refused argument: "version_required" for a missing version argument, else "invalid_argument". */
+function issueCode(i: InputIssue, versionArgument: string | undefined): string {
+  return versionArgument !== undefined && i.pointer === pointer(versionArgument) && i.sent === "nothing" ? "version_required" : "invalid_argument";
+}
+
 /**
- * The tool execution error for refused arguments (MWS-IN-4): `outcome: "not_applied"`, `code:
- * "invalid_argument"`, `argument` a JSON Pointer to the first refused argument, and a text that
- * names each argument, what was expected and what was sent.
+ * The tool execution error for refused arguments (MWS-IN-4): `outcome: "not_applied"`, `code`
+ * "invalid_argument" (or "version_required" where the version argument is missing, which takes
+ * precedence), `argument` a JSON Pointer to one refused argument, `argument_errors` with every
+ * refused argument and its reason, and a text that names each argument, what was expected and
+ * what was sent.
  */
 export function inputError(issues: InputIssue[], o: InputErrorOptions = {}): CallToolResult {
-  const [first, ...rest] = issues;
+  const ordered = [...issues].sort((a, b) => Number(issueCode(b, o.versionArgument) === "version_required") - Number(issueCode(a, o.versionArgument) === "version_required"));
+  const [first, ...rest] = ordered;
   const summary = first ? describeIssue(first) : "the arguments were refused";
+  const firstCode = first ? issueCode(first, o.versionArgument) : "invalid_argument";
   return notApplied({
     summary,
-    code: o.code ?? "invalid_argument",
+    code: o.code ?? firstCode,
     argument: first?.pointer,
+    argumentErrors: ordered.map((i) => ({ argument: i.pointer, code: issueCode(i, o.versionArgument), message: `${describeIssue(i).replace(/^./, (c) => c.toUpperCase())}.` })),
     message: `${summary.charAt(0).toUpperCase()}${summary.slice(1)}.`,
     object: o.object,
     operation: o.operation,
     repeat: "no",
     notes: [
       ...rest.map((i) => `Also: ${describeIssue(i)}`),
-      ...issues.map((i) => `Argument ${q(i.path || "(arguments)")}: expected ${i.expected}; sent ${i.sent}`),
+      ...ordered.map((i) => `Argument ${q(i.path || "(arguments)")}: expected ${i.expected}; sent ${i.sent}`),
       "Correct the arguments before calling again",
     ],
   });
+}
+
+/** Version-like argument names, for inferring the version argument from a schema. */
+const VERSION_NAME = /(^|_)version$|^if_match$|^etag$/i;
+
+/**
+ * The version argument a schema requires, where exactly one required top-level argument has a
+ * version-like name (`expected_version`, `version`, `base_version`, `if_match`, `etag`).
+ */
+export function inferVersionArgument(schema: JsonSchema): string | undefined {
+  const found = (schema.required ?? []).filter((r) => VERSION_NAME.test(r));
+  return found.length === 1 ? found[0] : undefined;
 }
 
 /** A compiled strict input: the schema to advertise and the check to run on every call. */
@@ -347,17 +371,20 @@ export interface StrictInput {
 
 /**
  * Compiles a tool's input schema for strict validation. Throws SchemaError for a keyword the
- * validator does not enforce, or for a top level that is not `type: "object"`.
+ * validator does not enforce, or for a top level that is not `type: "object"`. The version
+ * argument (for "version_required") is `options.versionArgument`, or inferred from the schema
+ * (inferVersionArgument).
  */
-export function strictInput(schema: JsonSchema): StrictInput {
+export function strictInput(schema: JsonSchema, options: { versionArgument?: string } = {}): StrictInput {
   if (schema.type !== "object") throw new SchemaError(`inputSchema.type must be "object"`);
   assertSupportedSchema(schema);
   const closed = closeSchema(schema) as JsonSchema & { type: "object" };
+  const versionArgument = options.versionArgument ?? inferVersionArgument(schema);
   return {
     schema: closed,
     validate(args) {
       const issues = validateArguments(closed, args);
-      if (issues.length) return { ok: false, issues, result: inputError(issues) };
+      if (issues.length) return { ok: false, issues, result: inputError(issues, { versionArgument }) };
       return { ok: true, value: (args ?? {}) as Record<string, unknown> };
     },
   };

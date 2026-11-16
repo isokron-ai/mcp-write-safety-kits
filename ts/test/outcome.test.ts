@@ -22,17 +22,18 @@ test("unknown outcome with a key: same_key; with a version: same_version", () =>
   const v = unknownOutcome({ summary: "the update was sent", readWith: rw, guard: { version: { arg: "expected_version", value: 4 } } });
   assert.equal(readResult(v)!.repeat, "same_version");
   assert.equal(readResult(v)!.version_argument, "expected_version");
-  assert.match(text(v), /only with the same expected_version 4: if the first call was applied, the repeat is refused/);
+  assert.match(text(v), /only with the same expected_version 4/);
 });
 
 test("classifyError: refusals, unsent requests and the rest", () => {
   assert.equal(classifyError(new NotAppliedError("refused")), "refused");
   assert.equal(classifyError(Object.assign(new Error("x"), { code: "ECONNREFUSED" })), "not_sent");
   assert.equal(classifyError(new TypeError("fetch failed", { cause: Object.assign(new Error("y"), { code: "ENOTFOUND" }) })), "not_sent");
-  assert.equal(classifyError(Object.assign(new Error("x"), { code: "ECONNRESET" })), "unknown");
-  assert.equal(classifyError(Object.assign(new Error("x"), { code: "ETIMEDOUT" })), "unknown");
-  assert.equal(classifyError(new OutcomeUnknownError("lost")), "unknown");
-  assert.equal(classifyError(new Error("something else")), "unknown");
+  assert.equal(classifyError(Object.assign(new Error("x"), { code: "ECONNRESET" })), "no_answer");
+  assert.equal(classifyError(Object.assign(new Error("x"), { code: "ETIMEDOUT" })), "no_answer");
+  assert.equal(classifyError(Object.assign(new Error("aborted"), { name: "TimeoutError" })), "no_answer");
+  assert.equal(classifyError(new OutcomeUnknownError("lost")), "no_answer");
+  assert.equal(classifyError(new Error("something else")), "internal_error");
 });
 
 test("guardWrite passes a result through", async () => {
@@ -42,12 +43,18 @@ test("guardWrite passes a result through", async () => {
 
 test("guardWrite: a connection reset becomes no_answer and leaks nothing", async () => {
   const r = await guardWrite(async () => { throw Object.assign(new Error("socket hang up https://api.example/x?token=SECRET"), { code: "ECONNRESET" }); },
-    { readWith: rw, what: `the update to note "n-1" was sent and no answer arrived`, object: { id: "n-1" } });
+    { readWith: rw, what: `the update of note "n-1"`, object: { id: "n-1" } });
   const s = readResult(r)!;
   assert.equal(s.outcome, "unknown");
   assert.equal(s.code, "no_answer");
   assert.equal(s.message, "error code ECONNRESET");
   assert.doesNotMatch(JSON.stringify(r), /SECRET/);
+});
+
+test("guardWrite: a crash in the server is internal_error, never no_answer", async () => {
+  const r = await guardWrite(async () => { throw new TypeError("x is undefined"); }, { readWith: rw, what: `the update of note "n-1"` });
+  assert.deepEqual([readResult(r)!.outcome, readResult(r)!.code, readResult(r)!.repeat], ["unknown", "internal_error", "read_first"]);
+  assert.match(text(r), /^Outcome unknown: the update of note "n-1" stopped on a fault in the server/);
 });
 
 test("guardWrite: a refused connection is not_sent and may be repeated", async () => {

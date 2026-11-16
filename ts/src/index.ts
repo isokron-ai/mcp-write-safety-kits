@@ -4,9 +4,9 @@
 export type { CallToolResult, TextContent, Tool, ToolAnnotations, MaybePromise } from "./types.js";
 
 export {
-  SHAPE, SHAPE_NAME, SHAPE_VERSION, q, pointer, pointerOf, objectRef, isErrorFor, renderText, assertShape, toToolResult, readResult,
+  SHAPE, SHAPE_NAME, SHAPE_VERSION, RESERVED_CODES, q, pointer, pointerOf, isErrorFor, renderText, assertShape, toToolResult, readResult,
   applied, notApplied, itemsResult, accepted, conflict,
-  type Outcome, type Repeat, type ItemOutcome, type FixedCode, type Scalar, type ObjectRef, type Item, type Conflict, type ReadWith,
+  type Outcome, type Repeat, type ItemOutcome, type ReservedCode, type Idv, type Scalar, type ObjectRef, type ParentRef, type Item, type Conflict, type ArgumentError, type ReadWith, type ReadShape,
   type WriteResult, type TextOptions, type AppliedOptions, type NotAppliedOptions, type ItemsOptions, type AcceptedOptions, type ConflictOptions,
 } from "./result.js";
 
@@ -28,7 +28,7 @@ export {
 } from "./idempotency.js";
 
 export {
-  strictInput, withStrictInput, validateArguments, inputError, describeIssue, closeSchema, assertSupportedSchema, jsonEqual,
+  strictInput, withStrictInput, validateArguments, inputError, inferVersionArgument, describeIssue, closeSchema, assertSupportedSchema, jsonEqual,
   SchemaError, SUPPORTED_KEYWORDS,
   type JsonSchema, type JsonType, type InputIssue, type Validation, type StrictInput, type InputErrorOptions,
 } from "./strict-input.js";

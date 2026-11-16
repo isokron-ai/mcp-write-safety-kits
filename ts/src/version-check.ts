@@ -3,8 +3,11 @@
 // The caller sends the version it read. Before the write, the helper reads the object's current
 // version through a callback and compares. On a mismatch nothing is written, and the caller gets a
 // conflict: a tool execution error with `code: "conflict"`, `repeat: "read_first"`, the current
-// version on its own and the current state as JSON (write-result/0.1, `conflict`). On a match the
-// write callback runs and its receipt is returned.
+// version on its own, the current state only where the server allow-lists its fields (otherwise
+// none: the caller reads the object), and `checked_by: "server"` (the comparison was
+// the server's). On a match the write callback runs and its receipt is returned, with
+// `repeat: "same_version"` where the call carried a version. Versions and ids keep the JSON type
+// they have (the type the tool's version argument takes); they are compared as strings.
 //
 // Where the backend has its own version check (an ETag with If-Match, a revision precondition),
 // pass the version through to it as well (Annex B-2) and throw VersionConflictError from the write
@@ -13,21 +16,21 @@
 // per-object lock below (Annex B-4) closes the window for writers inside one server process only.
 // Say so in the tool's description where the backend has no check of its own (MWS-CONC-5).
 
-import { applied, conflict, notApplied, pointer, q, type ReadWith, type Scalar } from "./result.js";
+import { applied, conflict, notApplied, pointer, q, type ReadWith, type Idv } from "./result.js";
 import { guardWrite } from "./outcome.js";
 import { inputError } from "./strict-input.js";
 import type { CallToolResult, MaybePromise } from "./types.js";
 
 /** The object as it is now. */
 export interface Current<S> {
-  version: Scalar;
+  version: Idv;
   state: S;
 }
 
 /** What the write callback reports. */
 export interface WriteReceipt {
   /** The object's version after the write. */
-  version?: Scalar;
+  version?: Idv;
   /**
    * The fields the write changed, as JSON Pointers into the object as the read tool returns it, or
    * top-level field names (converted). An empty list says the write changed nothing (a no-op).
@@ -69,13 +72,13 @@ const defaultMutex = new KeyedMutex();
 
 export interface CompareAndSetOptions<S> {
   /** The object's identifier. */
-  id: Scalar;
+  id: Idv;
   /** The kind of object, for `object.type` and sentences ("note"). Default "object". */
   type?: string;
   /** The kind of write: "update" (default), "delete", or a command name. */
   operation?: string;
   /** The version the caller sent (undefined where it sent none). */
-  expectedVersion: Scalar | undefined;
+  expectedVersion: Idv | undefined;
   /**
    * Require the version (default true). With true, a call without one is refused with code
    * "version_required", naming the argument (MWS-CONC-2 guidance: a version the caller may leave
@@ -91,8 +94,6 @@ export interface CompareAndSetOptions<S> {
   override?: boolean;
   /** The argument that takes the version. Default "expected_version". */
   versionArgument?: string;
-  /** "backend" where the version is the backend's own (default), "server" where the server derives it (B-3). */
-  versionSource?: "backend" | "server";
   /** The read that returns the object, e.g. { tool: "get_note", arguments: { id } }. */
   readWith: ReadWith;
   /** Reads the object as it is now; undefined where it does not exist. */
@@ -118,12 +119,12 @@ export interface CompareAndSetOptions<S> {
   /** One sentence for the receipt, without the opening word: `updated note "n-3"`. Quote values with q(). */
   summary?(receipt: WriteReceipt): string;
   /** Compares versions. Default: equality after converting both to strings. */
-  equals?(a: Scalar, b: Scalar): boolean;
+  equals?(a: Idv, b: Idv): boolean;
   /** Per-object lock (default: one lock shared by every call of this module); false for none. */
   lock?: KeyedMutex | false;
 }
 
-const sameVersion = (a: Scalar, b: Scalar) => String(a) === String(b);
+const sameVersion = (a: Idv, b: Idv) => String(a) === String(b);
 
 /** The state a conflict may carry: only what the server declared safe, else none. */
 function conflictStateOf<S>(state: S, o: Pick<CompareAndSetOptions<S>, "conflictFields" | "conflictState">): { state?: Record<string, unknown>; omitted?: string[] } {
@@ -153,28 +154,30 @@ export async function compareAndSet<S>(o: CompareAndSetOptions<S>): Promise<Call
       reason: `is required: send the version you read with ${q(o.readWith.tool)}`,
       expected: "the version you read",
       sent: "nothing",
-    }], { code: "version_required", object: { type, id: o.id }, operation });
+    }], { versionArgument: arg, object: { type, id: o.id }, operation });
   }
   const object = { type, id: o.id };
-  const conflictFor = (cur: Current<S>, source: "backend" | "server"): CallToolResult => {
+  const conflictFor = (cur: Current<S>, checkedBy: "backend" | "server"): CallToolResult => {
     const c = conflictStateOf(cur.state, o);
     return conflict({
-      id: o.id, type, operation, currentVersion: cur.version, versionSource: source,
+      id: o.id, type, operation, sentVersion: o.expectedVersion, currentVersion: cur.version, checkedBy,
       currentState: c.state, omitted: c.omitted, versionArgument: arg, readWith: o.readWith,
     });
   };
   const run = async (): Promise<CallToolResult> => {
     const cur = await o.read();
-    if (!cur) return notApplied({ summary: `${type} ${q(String(o.id))} was not found`, code: "not_found", object, operation, readWith: o.readWith });
+    if (!cur) return notApplied({ summary: `${type} ${q(o.id)} was not found`, code: "not_found", object, operation, readWith: o.readWith });
     if (o.expectedVersion !== undefined && !(o.equals ?? sameVersion)(o.expectedVersion, cur.version)) {
-      return conflictFor(cur, o.versionSource ?? "backend");
+      return conflictFor(cur, "server");
     }
     return guardWrite(async () => {
       try {
         const r = await o.write(cur);
         return applied({
-          summary: o.summary ? o.summary(r) : `${operation === "delete" ? "deleted" : "wrote"} ${type} ${q(String(o.id))}`,
+          summary: o.summary ? o.summary(r) : `${operation === "delete" ? "deleted" : "wrote"} ${type} ${q(o.id)}`,
           operation,
+          repeat: o.expectedVersion !== undefined ? "same_version" : "no",
+          sentVersion: o.expectedVersion,
           object: { type, id: o.id, ...(r.version !== undefined && operation !== "delete" ? { version: r.version } : {}) },
           changed: r.changed,
           readWith: operation === "delete" ? undefined : o.readWith,
@@ -188,8 +191,7 @@ export async function compareAndSet<S>(o: CompareAndSetOptions<S>): Promise<Call
       readWith: o.readWith,
       object,
       operation,
-      what: `the ${operation} of ${type} ${q(String(o.id))} was sent and no answer arrived`,
-      whatOnError: `the ${operation} of ${type} ${q(String(o.id))} stopped with an error after it may have been sent`,
+      what: `the ${operation} of ${type} ${q(o.id)}`,
       guard: o.expectedVersion !== undefined ? { version: { arg, value: o.expectedVersion } } : undefined,
     });
   };

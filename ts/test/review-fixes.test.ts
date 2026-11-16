@@ -10,6 +10,12 @@ import {
 const RW = { tool: "get_note", arguments: { id: "n-1" } };
 const mws = (r: CallToolResult) => (r.structuredContent as Record<string, Record<string, unknown>>)["mws"]!;
 const text = (r: CallToolResult) => String((r.content[0] as { text: string }).text);
+/** The kit fails closed: a shape that breaks a rule becomes an internal_error result naming the rule. */
+const closed = (r: CallToolResult, why: RegExp) => {
+  assert.equal(mws(r)["outcome"], "unknown");
+  assert.equal(mws(r)["code"], "internal_error");
+  assert.match(String(mws(r)["message"]), why);
+};
 
 test("the first text block names the read wherever read_with is given", () => {
   for (const r of [
@@ -22,23 +28,24 @@ test("the first text block names the read wherever read_with is given", () => {
 
 test("read_first needs read_with or object.id", () => {
   const items = [{ index: 0, outcome: "applied" as const }, { index: 1, outcome: "not_applied" as const }];
-  assert.throws(() => itemsResult({ summary: "x", items }), /read_first/);
+  closed(itemsResult({ summary: "x", items }), /read_first/);
   assert.equal(mws(itemsResult({ summary: "x", items, object: { id: "nb-1" } }))["repeat"], "read_first");
 });
 
-test("repeat yes after an applied delete is refused", () => {
-  assert.throws(() => applied({ summary: "deleted", operation: "delete", repeat: "yes" }), /delete/);
+test("repeat yes after applied (a delete included) is refused", () => {
+  closed(applied({ summary: "deleted", operation: "delete", repeat: "yes" as never }), /repeat "yes"/);
 });
 
 test("same_key and same_version need the key or version the call carried", () => {
-  assert.throws(() => notApplied({ summary: "x", repeat: "same_key" }), /same_key/);
-  assert.throws(() => notApplied({ summary: "x", repeat: "same_version" }), /same_version/);
-  assert.equal(mws(notApplied({ summary: "x", repeat: "same_key", key: "k-12345678", keyArgument: "idempotency_key" }))["repeat"], "same_key");
+  closed(applied({ summary: "x", repeat: "same_key" }), /same_key/);
+  closed(applied({ summary: "x", repeat: "same_version" }), /same_version/);
+  assert.equal(mws(applied({ summary: "x", repeat: "same_key", key: "k-12345678", keyArgument: "idempotency_key" }))["repeat"], "same_key");
+  assert.equal(mws(applied({ summary: "x", repeat: "same_version", sentVersion: 3, versionArgument: "expected_version" }))["repeat"], "same_version");
 });
 
 test("an open item is never under applied or not_applied", () => {
-  assert.throws(() => notApplied({ summary: "x", items: [{ index: 0, outcome: "unknown" }] }), /open outcome/);
-  assert.throws(() => notApplied({ summary: "x", items: [{ index: 0, outcome: "applied" }] }), /partial/);
+  closed(notApplied({ summary: "x", items: [{ index: 0, outcome: "unknown" }] }), /open outcome/);
+  closed(notApplied({ summary: "x", items: [{ index: 0, outcome: "applied" }] }), /partial/);
 });
 
 test("a null or empty current version is left out, not written as a placeholder", () => {
@@ -46,7 +53,7 @@ test("a null or empty current version is left out, not written as a placeholder"
     const r = conflict({ id: "n-1", currentVersion: v as unknown as string, currentState: { t: 1 }, readWith: RW });
     const c = mws(r)["conflict"] as Record<string, unknown>;
     assert.equal(c["current_version"], undefined);
-    assert.equal(c["version_source"], undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(c, "current_version"), false);
     assert.doesNotMatch(text(r), /version null/);
   }
 });
@@ -55,10 +62,12 @@ test("no_answer only where the error shows a lost answer", async () => {
   assert.equal(unknownCode(Object.assign(new Error("t"), { code: "ETIMEDOUT" })), "no_answer");
   assert.equal(unknownCode(new OutcomeUnknownError("timeout after 30 s")), "no_answer");
   assert.equal(unknownCode(new TypeError("x is undefined")), "internal_error");
-  const r = await guardWrite(async () => { throw new TypeError("bug"); }, { readWith: RW, what: "sent, no answer", whatOnError: "stopped with an error" });
+  const r = await guardWrite(async () => { throw new TypeError("bug"); }, { readWith: RW, what: "the write" });
   assert.equal(mws(r)["outcome"], "unknown");
   assert.equal(mws(r)["code"], "internal_error");
-  assert.match(text(r), /stopped with an error/);
+  assert.match(text(r), /stopped on a fault in the server/);
+  const a = await guardWrite(async () => { throw Object.assign(new Error("aborted"), { name: "AbortError", code: "ABORT_ERR" }); }, { readWith: RW, what: "the write" });
+  assert.equal(mws(a)["code"], "internal_error", "an abort is not a lost answer");
 });
 
 test("a full key store refuses a new key and never drops a live one", async () => {
@@ -69,13 +78,18 @@ test("a full key store refuses a new key and never drops a live one", async () =
     if (fail) throw Object.assign(new Error("timeout"), { code: "ETIMEDOUT" });
     return applied({ summary: `wrote ${q(key)}` });
   });
-  await assert.rejects(call("key-lost-1", true));
+  const lost = await call("key-lost-1", true);
+  assert.equal(mws(lost)["outcome"], "unknown");
+  assert.equal(mws(lost)["code"], "no_answer");
+  assert.equal(mws(lost)["repeat"], "read_first", "a same_key repeat would only replay the open answer");
+  assert.match(text(lost), /new idempotency_key/);
   await call("key-ok-0001");
   const full = await call("key-ok-0002");
   assert.equal(mws(full)["code"], "key_store_full");
   assert.equal(mws(full)["outcome"], "not_applied");
   const again = await call("key-lost-1", true);
   assert.equal(mws(again)["outcome"], "unknown");
+  assert.equal(mws(again)["replayed"], true);
   assert.equal(writes, 2, "the lost key was not dropped, so its repeat wrote nothing");
 });
 

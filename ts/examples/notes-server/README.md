@@ -36,11 +36,11 @@ mcp-writecheck plan -m writecheck.yaml
 mcp-writecheck run  -m writecheck.yaml --confirm-target notes-server --plan-hash <hash from plan>
 ```
 
-Every write result carries the write-result/0.1 shape (draft Annex B-9) in `structuredContent.mws`, and every write tool declares an `outputSchema` built with `outputSchemaFor()`. The manifest format at the tested commit cannot adopt a shape by name and version (the draft's edit to rule 11 and Annex E), so the manifest declares patterns over the first text block's opening words and the `"outcome"` member of the JSON text block, and reads a replay from the structured member `mws.replayed` (`idempotency.replay_marker`).
+Every write result carries the write-result/0.1 shape (MWS 0.9, Annex B, B-9) in `structuredContent.mws`, and every write tool declares an `outputSchema` built with `outputSchemaFor()`. The manifest format at the tested commit cannot adopt a shape by name and version (B-9's edits to rule 11 and Annex E are not built there), so the manifest declares patterns over the first text block's opening words and the `"outcome"` member of the JSON text block, and reads a replay from the structured member `mws.replayed` (`idempotency.replay_marker`).
 
 ### Results of one run
 
-mcp-writecheck at commit e613620 (0.1.0-dev.0, MWS 0.9), run `c8f24752f9`, plan `7eb58cb932213878`, 16 November 2026 (UTC). One row per requirement; the write paths for each verdict are in brackets. There is no total: `not tested` and `not applicable` rows make any count meaningless (spec 5.2). No record is `violated`.
+mcp-writecheck at commit 0295ed6 (0.1.0-dev.0, MWS 0.9), run `54e68d4a3c`, plan `5e06c86d7dbfba04`, 16 November 2026 (UTC), against the build that follows the approved B-9 text (integer versions, 13 reserved codes, keyed repeats). Two earlier runs, against the provisional `result/v0` build (`31f0300bbd`) and the first `write-result/0.1` draft (`f54e8a2a5d`), gave the same verdict on every record. One row per requirement; the write paths for each verdict are in brackets. There is no total: `not tested` and `not applicable` rows make any count meaningless (spec 5.2). No record is `violated`.
 
 | Requirement | Level | Verdicts (write paths) |
 |---|---|---|
