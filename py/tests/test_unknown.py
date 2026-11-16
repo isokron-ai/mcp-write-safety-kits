@@ -68,7 +68,7 @@ def test_unknown_outcome_without_guard_names_the_read_and_does_not_invite_a_repe
     }
     t = r.content[0].text
     assert t.startswith('Outcome unknown: the update to note "n-3" was sent and no answer arrived. It is not known whether the change was applied.')
-    assert 'Before writing again, read with "get_note" and the arguments {"id":"n-3"}' in t
+    assert 'Before writing again, read it with "get_note" and the arguments {"id":"n-3"} and build the write from what the read shows.' in t
     assert "try again" not in t.lower() and "retry" not in t.lower()
 
 

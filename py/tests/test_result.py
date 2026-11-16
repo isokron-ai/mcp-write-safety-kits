@@ -1,4 +1,4 @@
-"""The write-result shape 0.1 (draft Annex B-9) and its text (MWS-RES-1, RES-2, RES-4, ATOM-1, CONC-4,
+"""The write-result shape 0.1 (Annex B, B-9) and its text (MWS-RES-1, RES-2, RES-4, ATOM-1, CONC-4,
 CONC-6)."""
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def test_applied_receipt():
             "outcome": "applied",
             "repeat": "no",
             "operation": "update",
-            "object": {"type": "note", "id": "n-3", "version": "4"},  # every object member is a string
+            "object": {"type": "note", "id": "n-3", "version": 4},  # ids and versions keep their JSON type
             "changed": ["/title", "/tags"],
         },
     }
@@ -81,7 +81,7 @@ def test_members_not_relevant_are_left_out():
 def test_changed_empty_and_missing_differ():
     assert mws(k.applied("x", changed=[]))["changed"] == []
     assert "changed" not in mws(k.applied("x"))
-    assert "Nothing changed: the values were already as asked." in texts(k.applied("x", changed=[]))[0]
+    assert "Changed: nothing." in texts(k.applied("x", changed=[]))[0]
 
 
 def test_not_applied_never_carries_a_version_in_object():
@@ -102,7 +102,7 @@ def test_partial_names_every_item_and_falls_back_to_not_applied():
     m = mws(r)
     assert m["outcome"] == "partial" and m["repeat"] == "read_first"
     t = texts(r)[0]
-    assert 'Item 0 ("n-1"): applied.' in t and 'Item 1 ("n-2"): not applied: does not exist.' in t and 'Item 2 ("n-3"): not attempted.' in t
+    assert "Some items remain applied; the JSON below gives the outcome of each." in t
     r = k.partial("none", items=[k.item(0, "not_applied", id="a"), k.item(1, "not_attempted", id="b")])
     assert mws(r)["outcome"] == "not_applied"
 
@@ -110,9 +110,9 @@ def test_partial_names_every_item_and_falls_back_to_not_applied():
 def test_conflict_carries_state_and_version_unambiguously():
     r = k.conflict(
         "n-3",
-        current_version="5",
-        version_source="backend",
-        current_state={"id": "n-3", "title": "v2 draft", "version": "5"},
+        current_version=5,
+        checked_by="backend",
+        current_state={"id": "n-3", "title": "v2 draft", "version": 5},
         omitted=["/body"],
         read_tool="get_note",
         noun="note",
@@ -128,9 +128,9 @@ def test_conflict_carries_state_and_version_unambiguously():
         "code": "conflict",
         "message": 'note "n-3" changed since the version you read',
         "conflict": {
-            "current_version": "5",
-            "version_source": "backend",
-            "current_state": {"id": "n-3", "title": "v2 draft", "version": "5"},
+            "current_version": 5,
+            "checked_by": "backend",
+            "current_state": {"id": "n-3", "title": "v2 draft", "version": 5},
             "omitted": ["/body"],
         },
         "read_with": {"tool": "get_note", "arguments": {"id": "n-3"}},
@@ -138,11 +138,12 @@ def test_conflict_carries_state_and_version_unambiguously():
     }
     t = texts(r)[0]
     assert "Nothing was changed." in t
-    assert 'Current version: "5" (send it as expected_version).' in t
-    assert 'Current state (JSON): {"id":"n-3","title":"v2 draft","version":"5"}' in t
-    assert 'Left out of the current state: "/body".' in t
-    assert "Do not resend your earlier values" in t
-    assert 'read with "get_note" and the arguments {"id":"n-3"}' in t
+    # The state is not restated in prose (B-9, Text); it is in the JSON block.
+    assert "Its current state and version are in the JSON below." in t
+    assert "v2 draft" not in t
+    assert json.loads(texts(r)[1])["mws"]["conflict"]["current_state"]["title"] == "v2 draft"
+    # Something is omitted, so the read comes first (B-9, Repeat: read_first).
+    assert 'Before writing again, read it with "get_note" and the arguments {"id":"n-3"}' in t
 
 
 def test_conflict_without_a_version_leaves_it_out():
@@ -163,14 +164,23 @@ def test_lock():
         ({"outcome": "partial", "repeat": "yes", "items": []}, "retry-invited"),
         ({"outcome": "applied", "repeat": "maybe"}, "mws.repeat"),
         ({"outcome": "applied", "code": "Bad Code"}, "lowercase"),
-        ({"outcome": "applied", "object": {"id": 3}}, "is a string"),
+        ({"outcome": "applied", "object": {"id": True}}, "string or an integer"),
+        ({"outcome": "applied", "object": {"id": 2**60}}, r"within 2\^53-1"),
+        ({"outcome": "applied", "repeat": "yes"}, "goes only with not_applied"),
+        ({"outcome": "not_applied", "repeat": "same_key"}, "does not go with not_applied"),
+        ({"outcome": "applied", "code": "no_answer"}, "goes with outcome"),
+        ({"outcome": "not_applied", "code": "conflict", "repeat": "no", "read_with": {"tool": "g", "arguments": {}}}, "read_first"),
+        ({"outcome": "not_applied", "code": "conflict", "repeat": "read_first"}, "read_with"),
+        ({"outcome": "accepted", "changed": []}, "accepted gives no changed"),
+        ({"outcome": "accepted", "object": {"version": 2}}, "accepted gives no object.version"),
+        ({"outcome": "not_applied", "items": [{"outcome": "not_applied"}]}, "index, step or id"),
+        ({"outcome": "not_applied", "argument_errors": [{"code": "x"}]}, "argument_errors"),
         ({"outcome": "not_applied", "object": {"id": "a", "version": "3"}}, "object.version is left out"),
         ({"outcome": "applied", "changed": ["title"]}, "JSON Pointers"),
         ({"outcome": "not_applied", "argument": "title"}, "JSON Pointer"),
         ({"outcome": "partial", "items": [{"index": 0, "outcome": "applied"}]}, "at least one item applied and one not"),
         ({"outcome": "partial", "items": [{"index": 0, "outcome": "applied"}, {"index": 1, "outcome": "unknown"}]}, "makes the whole outcome unknown"),
         ({"outcome": "not_applied", "conflict": {"current_version": "1", "current_state": {}}}, 'only where code is "conflict"'),
-        ({"outcome": "not_applied", "code": "conflict", "repeat": "no", "conflict": {"current_version": "1"}}, "current_state or with repeat"),
         ({"outcome": "applied", "replayed": False}, "replayed is true"),
         ({"outcome": "applied", "read_with": {"arguments": {}}}, "read_with"),
     ],
@@ -222,7 +232,8 @@ def test_read_result_versions():
     from mcp.types import CallToolResult
 
     assert k.read_result(k.applied("x"))["outcome"] == "applied"
-    assert k.read_result(CallToolResult(content=[], structuredContent={"mws": {"shape": "write-result/0.7", "outcome": "applied"}}))
+    # Before 1.0 a reader reads only the version it knows.
+    assert k.read_result(CallToolResult(content=[], structuredContent={"mws": {"shape": "write-result/0.7", "outcome": "applied"}})) is None
     assert k.read_result(CallToolResult(content=[], structuredContent={"mws": {"shape": "write-result/1.0", "outcome": "applied"}})) is None
     assert k.read_result(k.read_answer({"id": "n-1"})) is None
 
@@ -230,7 +241,7 @@ def test_read_result_versions():
 def test_replay():
     first = k.applied('created note "n-1"', object={"id": "n-1", "version": 1}, changed=["/title"])
     again = k.as_replay(first)
-    assert mws(again) == {**mws(first), "replayed": True}
+    assert mws(again) == {**mws(first), "replayed": True, "repeat": "same_key"}
     assert k.REPLAY_NOTE in texts(again)[0]
     assert json.loads(texts(again)[1]) == structured_of(again)
     assert not is_error_of(again)
@@ -245,5 +256,97 @@ def test_pointer_and_q():
 
 def test_shipped_schema_file_is_valid_2020_12():
     jsonschema.Draft202012Validator.check_schema(k.WRITE_RESULT_SCHEMA)
-    assert k.WRITE_RESULT_SCHEMA["properties"]["conflict"]["properties"]["current_version"] == {"type": "string"}
+    assert k.WRITE_RESULT_SCHEMA["$defs"]["idv"]["type"] == ["string", "integer"]
+    assert k.WRITE_RESULT_SCHEMA["properties"]["shape"] == {"const": "write-result/0.1"}
+
+    def no_closed_objects(node):
+        if isinstance(node, dict):
+            assert node.get("additionalProperties") is not False
+            for v in node.values():
+                no_closed_objects(v)
+        elif isinstance(node, list):
+            for v in node:
+                no_closed_objects(v)
+
+    no_closed_objects(k.WRITE_RESULT_SCHEMA)
     assert k.WRITE_RESULT_SCHEMA["required"] == ["shape", "outcome"]
+
+
+
+def test_ids_and_versions_keep_their_type_and_large_integers_become_strings():
+    m = mws(k.applied("x", object={"id": 7, "version": 2**53}))
+    assert m["object"] == {"id": 7, "version": str(2**53)}
+    assert mws(k.applied("x", object={"id": "n-1", "version": "e1"}))["object"] == {"id": "n-1", "version": "e1"}
+
+
+def test_repeat_after_applied_follows_the_guard_the_call_carried():
+    assert mws(k.applied("x"))["repeat"] == "no"
+    assert mws(k.applied("x", key=("idempotency_key", "k")))["repeat"] == "same_key"
+    assert mws(k.applied("x", version=("expected_version", 3)))["repeat"] == "same_version"
+    assert mws(k.accepted("x"))["repeat"] == "no"
+    assert mws(k.accepted("x", key=("k", "v")))["repeat"] == "same_key"
+
+
+def test_accepted_drops_version():
+    assert "version" not in mws(k.accepted("x", object={"id": "j-1", "version": 3}))["object"]
+
+
+def test_empty_selector_match_is_applied_with_zero():
+    m = mws(k.applied("deleted the matching notes", applied_count=0, items=[]))
+    assert m["outcome"] == "applied" and m["applied_count"] == 0 and m["items"] == []
+
+
+def test_selector_items_by_id_and_count():
+    r = k.partial(
+        "closed 2 of 3 matched tickets",
+        applied_count=2,
+        items=[k.item(outcome="not_applied", id="T-9", code="locked")],
+        read_with=k.read_with("list_tickets", status="open"),
+    )
+    m = mws(r)
+    assert m["outcome"] == "partial" and m["items"] == [{"id": "T-9", "outcome": "not_applied", "code": "locked"}]
+
+
+def test_all_or_nothing_refusal_takes_the_bad_items_code_and_per_item_conflicts():
+    r = k.not_applied(
+        "deleted none",
+        items=[
+            k.item(0, "not_applied", id="n-1", code="conflict", conflict=k.conflict_info(current_version=4, checked_by="backend", current_state={"t": 1})),
+            k.item(1, "not_attempted", id="n-2"),
+        ],
+        read_with=k.read_with("list_notes"),
+    )
+    m = mws(r)
+    assert m["code"] == "conflict" and m["repeat"] == "read_first" and "conflict" not in m
+    assert m["items"][0]["conflict"]["current_version"] == 4
+
+
+def test_object_parent():
+    m = mws(k.applied("added a comment", object={"type": "comment", "id": 9, "parent": {"type": "ticket", "id": "T-1", "version": 5}}, changed=[""]))
+    assert m["object"]["parent"] == {"type": "ticket", "id": "T-1", "version": 5}
+
+
+def test_the_json_block_is_exactly_structured_content():
+    for r in [k.applied("x", data={"n": "é"}), k.not_applied("y", code="not_found")]:
+        assert texts(r)[1] == json.dumps(structured_of(r), separators=(",", ":"), ensure_ascii=False)
+
+
+def test_golden_first_block_shared_with_the_typescript_kit():
+    """tests/golden/first-sentence.json is the TypeScript kit's test/golden/first-sentence.json, byte for
+    byte: the same shape and options give the same first text block in both kits (ALIGN.md, change n)."""
+    from pathlib import Path
+
+    cases = json.loads((Path(__file__).parent / "golden" / "first-sentence.json").read_text(encoding="utf-8"))
+    assert cases
+    for case in cases:
+        o = case["options"]
+        key = (o.get("keyArgument"), o.get("key")) if ("keyArgument" in o or "key" in o) else None
+        version = (None, o["sentVersion"]) if "sentVersion" in o else None
+        k.assert_shape({"mws": case["shape"]})
+        text = k.render_text({"mws": case["shape"]}, o["summary"], o.get("notes", ()), key=key, version=version)
+        assert text == case["text"], case["name"]
+
+
+def test_a_complete_conflict_state_may_stand_in_for_the_read():
+    t = texts(k.conflict("a", current_version=3, current_state={"t": 1}, read_tool="get", checked_by="backend"))[0]
+    assert 'Build the write again from them, or read it with "get" and the arguments {"id":"a"}; do not resend your earlier values with the new version.' in t

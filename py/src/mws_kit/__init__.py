@@ -6,7 +6,7 @@ Using the kit helps a server meet MWS; it does not make a server conformant. Onl
 
 Parts:
 
-- :mod:`mws_kit.result`: the write-result shape 0.1 (MWS 0.9 draft Annex B-9) and its builders.
+- :mod:`mws_kit.result`: the write-result shape 0.1 (MWS 0.9, Annex B, B-9) and its builders.
 - :mod:`mws_kit.schema`: its JSON Schema, and the ``outputSchema`` of a tool that carries it.
 - :mod:`mws_kit.version`: compare-and-set around your read and write (MWS-CONC-2, CONC-4, CONC-6).
 - :mod:`mws_kit.idempotency`: idempotency keys kept by the server (MWS-RETRY-1, RETRY-2).
@@ -28,8 +28,10 @@ from .result import (
     as_replay,
     assert_shape,
     conflict,
+    conflict_info,
     item,
     not_applied,
+    opening_line,
     partial,
     pointer,
     q,
@@ -37,6 +39,7 @@ from .result import (
     read_result,
     read_with,
     render_text,
+    restate,
     to_tool_result,
 )
 from .schema import WRITE_RESULT_SCHEMA, output_schema
@@ -47,6 +50,7 @@ from .unknown import (
     OutcomeUnknownError,
     RepeatGuard,
     classify_error,
+    unknown_code,
     guard_write,
     guard_write_async,
     unknown_outcome,
@@ -59,11 +63,12 @@ __all__ = [
     "__version__",
     # result shape (write-result/0.1)
     "SHAPE", "CODES", "REPLAY_NOTE", "WRITE_RESULT_SCHEMA", "ShapeError",
-    "applied", "accepted", "not_applied", "partial", "conflict", "item", "read_with", "pointer",
-    "to_tool_result", "render_text", "assert_shape", "read_result", "read_answer", "as_replay", "q",
+    "applied", "accepted", "not_applied", "partial", "conflict", "conflict_info", "item", "read_with", "pointer",
+    "to_tool_result", "render_text", "opening_line", "restate", "assert_shape", "read_result", "read_answer",
+    "as_replay", "q",
     "output_schema",
     # unknown outcomes
-    "unknown_outcome", "guard_write", "guard_write_async", "classify_error", "RepeatGuard",
+    "unknown_outcome", "guard_write", "guard_write_async", "classify_error", "unknown_code", "RepeatGuard",
     "NotAppliedError", "OutcomeUnknownError",
     # version check
     "VersionGuard", "Snapshot", "VersionConflict", "changed_fields",

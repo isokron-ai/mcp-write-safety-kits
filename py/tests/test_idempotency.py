@@ -267,3 +267,48 @@ def test_store_protocol_and_fingerprint():
     assert k.fingerprint({"a": 1, "key": "x"}, exclude=("key",)) == k.fingerprint({"a": 1, "key": "y"}, exclude=("key",))
     assert k.fingerprint({"a": 1}) != k.fingerprint({"a": "1"})
     assert "remembered for 24 hours" in k.Idempotency().describe()
+
+
+def test_keyed_answers_say_same_key():
+    idem, c = k.Idempotency(), Creator()
+    first = run(idem, c, "key-1", "a")  # the builder was not told the key: the kit restates it
+    assert structured_of(first)["repeat"] == "same_key"
+    assert 'only with the same idempotency_key "key-1"' in text_of(first)
+
+
+def test_replay_of_a_lost_answer_keeps_its_code():
+    idem = k.Idempotency()
+
+    def lost():
+        raise TimeoutError()
+
+    idem.run(scope="s", key="k", arguments={}, write=lost, read_with=RW)
+    again = structured_of(idem.run(scope="s", key="k", arguments={}, write=lost, read_with=RW))
+    # The key is kept, so a same_key repeat would only replay the open answer: the replay keeps read_first.
+    assert again["outcome"] == "unknown" and again["code"] == "no_answer" and again["replayed"] is True and again["repeat"] == "read_first"
+
+
+def test_crash_in_the_write_is_internal_error():
+    idem = k.Idempotency()
+
+    def crash():
+        raise KeyError("bug")
+
+    r = structured_of(idem.run(scope="s", key="k", arguments={}, write=crash, read_with=RW))
+    assert r["outcome"] == "unknown" and r["code"] == "internal_error"
+
+
+def test_key_not_known_for_a_uuid7_older_than_the_store():
+    import uuid
+
+    idem, c = k.Idempotency(refuse_unvouched_keys=True), Creator()
+    old_ms = int((idem.started - 3600) * 1000)
+    old = uuid.UUID(int=(old_ms << 80) | (7 << 76) | (2 << 62) | 1)
+    r = run(idem, c, str(old), "a")
+    m = structured_of(r)
+    assert m["outcome"] == "unknown" and m["code"] == "key_not_known" and m["repeat"] == "read_first"
+    assert c.made == []
+    new_ms = int((idem.started + 1) * 1000)
+    fresh = uuid.UUID(int=(new_ms << 80) | (7 << 76) | (2 << 62) | 1)
+    assert structured_of(run(idem, c, str(fresh), "a"))["outcome"] == "applied"
+    assert structured_of(run(idem, c, "not-a-uuid", "b"))["outcome"] == "applied"

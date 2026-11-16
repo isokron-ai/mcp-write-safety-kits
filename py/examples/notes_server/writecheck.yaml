@@ -38,16 +38,16 @@ canaries:
 review:
   by: the notes_server maintainers (rules written before the run)
   conflict_says_not_applied: "Nothing was changed"
-  conflict_says_reread: "Before writing again, read with"
+  conflict_says_reread: "read it with|Build the write again"
   rejection_gives_reason: "expected |must |is required|is not an argument"
   stale_writes_disclosed: "not detected|best-effort"
 
 # Spec 7.3, rule 11: how the kit words what a result says. Every write result carries
-# structuredContent.mws, the write-result shape 0.1 (MWS 0.9 draft Annex B-9). This CLI version cannot
-# adopt a shape by name and version, nor name a structured field for most kinds (only the replay
-# indicator, idempotency.replay_marker), so the patterns below match the first text block, whose
-# opening words the kit fixes from mws.outcome: "Applied:", "Not applied:", "Partly applied:",
-# "Outcome unknown:", "Accepted:".
+# structuredContent.mws, the write-result shape 0.1 (MWS 0.9, Annex B, B-9). The tester at the pinned
+# commit cannot adopt a shape by name and version (a results.shape declaration is refused), nor name a
+# structured field for most kinds (only the replay indicator, idempotency.replay_marker), so the
+# patterns below match the first text block, whose opening words the kit generates from
+# mws.outcome: "Applied:", "Not applied:", "Partly applied:", "Outcome unknown:", "Accepted:".
 patterns:
   not_applied: '^Not applied:|\bNothing was changed\b'
   outcome_unknown: '^Outcome unknown:|\bIt is not known whether the change was applied\b'
@@ -83,7 +83,7 @@ resources:
     fields:
       - { path: body, values: [first body, second body], empty: "" }
       - { path: tags, values: [[red], [blue, green]], empty: [] }
-    # The version (a string) is required by update_note and delete_note (no override argument).
+    # The version (an integer) is required by update_note and delete_note (no override argument).
     version: { read: version, arg: expected_version }
     delete: { tool: delete_note, args: { id: "{{id}}", expected_version: "{{version}}" } }
     list: { tool: list_notes, args: { title_prefix: "{{prefix}}" }, items: notes, id: id, name: title }

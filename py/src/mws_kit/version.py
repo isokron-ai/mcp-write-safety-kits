@@ -26,6 +26,11 @@ Use one guard either from sync code (:meth:`VersionGuard.apply`) or from async c
 (:meth:`VersionGuard.apply_async`), not both: the async form holds the per-object lock across
 awaits, and a sync call for the same object made on the event loop's thread (as SDK 1.x does for
 sync tools) would block the loop while waiting for it.
+
+A conflict found by the guard's own comparison says ``checked_by: "server"``; one that ``write``
+reports by raising :class:`VersionConflict` says ``checked_by: "backend"``. Versions and ids are
+passed through in the type ``read`` returns them, which should be the type the tool's version and
+id arguments accept.
 """
 
 from __future__ import annotations
@@ -121,16 +126,17 @@ class VersionGuard(Generic[C]):
         fields the caller may read through the read tool and that never hold a secret. Every other
         field of the state is listed in ``conflict.omitted``. Without it (the default), a conflict
         carries no ``current_state``: it gives ``repeat: "read_first"`` with ``read_with``, and the
-        caller reads the object (draft B-9). The kit never copies the whole state ``read`` returns
+        caller reads the object (B-9). The kit never copies the whole state ``read`` returns
         into a result by default.
     :param omit: fields to leave out even where ``state_fields`` lists them (long histories, say).
         They are listed in ``conflict.omitted``.
-    :param version_source: ``"backend"`` where the version is the backend's own, ``"server"`` where
-        the server derives it (Annex B-3: a best-effort check).
     :param object_type: ``object.type`` in results (``"note"``).
     :param id_argument: the read tool's argument that takes the id, for ``read_with``.
     :param data_key: on a receipt, also return the object's new state as the tool's own output under
         this member (``{"note": {...}, "mws": {...}}``).
+    :param precheck: compare the versions in the server before calling ``write`` (the default; a
+        mismatch is reported with ``checked_by: "server"``). Set False where ``write`` passes the
+        version to a backend that checks it: every conflict then comes from the backend.
     """
 
     read: Callable[[Id], Snapshot | None | Awaitable[Snapshot | None]]
@@ -143,10 +149,10 @@ class VersionGuard(Generic[C]):
     version_field: str = "version"
     state_fields: Sequence[str] | None = None
     omit: Sequence[str] = ()
-    version_source: str = "backend"
     object_type: str | None = None
     id_argument: str = "id"
     data_key: str | None = None
+    precheck: bool = True
     _locks: dict[Any, list[Any]] = field(default_factory=dict, init=False, repr=False)
     _locks_guard: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
@@ -220,7 +226,7 @@ class VersionGuard(Generic[C]):
             ],
         )
 
-    def _conflict(self, id: Id, current: Snapshot, operation: str) -> CallToolResult:  # noqa: A002
+    def _conflict(self, id: Id, current: Snapshot, operation: str, checked_by: str) -> CallToolResult:  # noqa: A002
         state: dict[str, Any] | None = None
         omitted: list[str] = []
         if self.state_fields is not None:
@@ -230,7 +236,7 @@ class VersionGuard(Generic[C]):
         return conflict(
             id,
             current_version=current.version,
-            version_source=self.version_source,  # type: ignore[arg-type]
+            checked_by=checked_by,  # type: ignore[arg-type]
             current_state=state,
             omitted=omitted,
             read_tool=self.read_tool,
@@ -241,17 +247,19 @@ class VersionGuard(Generic[C]):
             operation=operation,
         )
 
-    def _receipt(self, id: Id, before: Snapshot, after: Snapshot | None, verb: str, operation: str) -> CallToolResult:  # noqa: A002
-        # repeat "no": the usual value after applied (draft B-9). A repeat of a call that carried the version is
-        # refused as a conflict, but "yes" is not given after a whole-value set or a delete.
+    def _receipt(self, id: Id, before: Snapshot, after: Snapshot | None, verb: str, operation: str, expected: Version | None) -> CallToolResult:  # noqa: A002
+        # repeat "same_version" where the call carried the version (B-9: a repeat that finds the write already
+        # applied is refused), else "no". Never "yes" after applied.
+        ver = (self.version_arg, expected) if expected is not None else None
         if after is None:
-            return applied(f"{verb} {self.noun} {q(id)}", object=self._obj(id), operation=operation)
+            return applied(f"{verb} {self.noun} {q(id)}", object=self._obj(id), operation=operation, version=ver)
         ch = changed_fields(before.state, after.state, ignore=[*self.ignore, self.version_field])
         return applied(
             f"{verb} {self.noun} {q(id)}" if ch else f"{self.noun} {q(id)} already had these values",
             object=self._obj(id, after.version),
             changed=ch,
             operation=operation,
+            version=ver,
             data={self.data_key: dict(after.state)} if self.data_key else None,
         )
 
@@ -298,16 +306,16 @@ class VersionGuard(Generic[C]):
             current = cast("Snapshot | None", self.read(id))
             if current is None:
                 return self._missing(id, operation)
-            if expected_version is not None and not _same_version(expected_version, current.version):
-                return self._conflict(id, current, operation)
+            if self.precheck and expected_version is not None and not _same_version(expected_version, current.version):
+                return self._conflict(id, current, operation, "server")
             try:
                 after = cast("Snapshot | None", self.write(id, change, expected_version))
             except VersionConflict as vc:
                 now = vc.current or cast("Snapshot | None", self.read(id))
-                return self._conflict(id, now, operation) if now is not None else self._missing(id, operation)
+                return self._conflict(id, now, operation, "backend") if now is not None else self._missing(id, operation)
             except Exception as e:  # noqa: BLE001
                 return self._error(id, e, expected_version, what, operation)
-            return self._receipt(id, current, after, verb, operation)
+            return self._receipt(id, current, after, verb, operation, expected_version)
         finally:
             self._done_with(id, lock)
 
@@ -331,16 +339,16 @@ class VersionGuard(Generic[C]):
             current = await _maybe(self.read(id))
             if current is None:
                 return self._missing(id, operation)
-            if expected_version is not None and not _same_version(expected_version, current.version):
-                return self._conflict(id, current, operation)
+            if self.precheck and expected_version is not None and not _same_version(expected_version, current.version):
+                return self._conflict(id, current, operation, "server")
             try:
                 after = await _maybe(self.write(id, change, expected_version))
             except VersionConflict as vc:
                 now = vc.current or await _maybe(self.read(id))
-                return self._conflict(id, now, operation) if now is not None else self._missing(id, operation)
+                return self._conflict(id, now, operation, "backend") if now is not None else self._missing(id, operation)
             except Exception as e:  # noqa: BLE001
                 return self._error(id, e, expected_version, what, operation)
-            return self._receipt(id, current, after, verb, operation)
+            return self._receipt(id, current, after, verb, operation, expected_version)
         finally:
             self._done_with(id, lock)
 

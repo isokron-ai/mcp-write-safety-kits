@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from ._mcp import CallToolResult
-from .result import ReadWith, not_applied, to_tool_result
+from .result import ReadWith, _object, not_applied, to_tool_result
 
 __all__ = [
     "RepeatGuard",
@@ -103,6 +103,7 @@ _LOST_ANSWER_NAMES = {
     # requests / urllib3
     "ReadTimeoutError",
     "ProtocolError",
+    "ChunkedEncodingError",
 }
 
 
@@ -115,7 +116,7 @@ def _is_lost_answer(e: BaseException) -> bool:
 
 
 def unknown_code(e: BaseException) -> str:
-    """The ``code`` for an unknown outcome caused by ``e``: ``"no_answer"`` (fixed by the draft:
+    """The ``code`` for an unknown outcome caused by ``e``: ``"no_answer"`` (fixed by B-9:
     a request was sent and no answer arrived) only where the error says so (a timeout, a reset or
     closed connection, :class:`OutcomeUnknownError`), anywhere in its ``__cause__`` chain;
     otherwise ``"internal_error"`` (a server code: the handler failed after it may have written)."""
@@ -185,6 +186,9 @@ def unknown_outcome(
     shows whether the write took effect (:func:`mws_kit.read_with`). Without a ``guard``,
     ``repeat`` is ``"read_first"``; with an idempotency key it is ``"same_key"``, with a version
     ``"same_version"``. Never ``"yes"``: that would invite a blind repeat of an open write.
+    ``code`` is ``no_answer`` by default; ``backend_error`` (an error answer that does not say
+    whether the request was carried out), ``internal_error``, ``in_progress`` and
+    ``key_not_known`` are the other reserved codes that go with ``unknown``.
     ``items`` gives the parts whose outcome is known, where the call had several.
     """
     out: list[str] = []
@@ -196,7 +200,7 @@ def unknown_outcome(
         repeat, key, ver = "same_version", None, guard.version
     else:
         repeat, key, ver = "read_first", None, None
-    obj = None if object is None else {k: str(v) for k, v in object.items() if v is not None}
+    obj = _object(object)
     return to_tool_result(
         {
             "outcome": "unknown",
@@ -206,6 +210,7 @@ def unknown_outcome(
             "items": [dict(i) for i in items] if items is not None else None,
             "code": code,
             "read_with": {"tool": read_with["tool"], "arguments": dict(read_with.get("arguments") or {})},
+            "version_argument": ver[0] if ver is not None else None,
         },
         summary,
         [*out, *notes],

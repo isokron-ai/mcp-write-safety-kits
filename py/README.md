@@ -8,15 +8,15 @@ idempotency keys, strict inputs, truthful results, unknown outcomes and explicit
 - No runtime dependency beyond the official MCP Python SDK (`mcp`). Works with the SDK's high-level
   server in both lines, `FastMCP` (1.x) and `MCPServer` (2.x), and with plain handlers on the
   low-level `Server`.
-- Apache-2.0. Not published yet.
+- Apache-2.0, except the shape's schema file (CC BY 4.0). Not published yet.
 
 **The kit helps a server meet MWS. Using it does not make a server conformant.** MWS gives a
 verdict per requirement and per write path, and only the tests decide it: run
 [`mcp-writecheck`](#proof-the-example-server-and-mcp-writecheck) against your own server in a
 test environment.
 
-Results use the **write-result shape 0.1**, described in the draft Annex B-9 for MWS 0.9. It is a
-draft: version 0.2 may change it, and the kit will follow.
+Results use the **write-result shape 0.1** of MWS 0.9, Annex B, B-9. Before version 1.0 a later
+0.x version may change it; the kit will follow.
 
 ## Contents
 
@@ -43,9 +43,9 @@ pip install -e .            # from this folder; brings the MCP Python SDK
 ```python
 from mcp.server.mcpserver import MCPServer          # SDK 2.x; on 1.x: from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult
-from mws_kit import Snapshot, VersionGuard, WriteSafety, read_answer
+from mws_kit import Snapshot, VersionConflict, VersionGuard, WriteSafety, read_answer
 
-notes = {"n-1": {"id": "n-1", "title": "Draft", "version": "1"}}
+notes = {"n-1": {"id": "n-1", "title": "Draft", "version": 1}}
 
 def read(note_id):
     n = notes.get(note_id)
@@ -53,7 +53,9 @@ def read(note_id):
 
 def write(note_id, change, expected_version):
     n = notes[note_id]
-    notes[note_id] = {**n, **change, "version": str(int(n["version"]) + 1)}
+    if n["version"] != expected_version:               # the store's own check (Annex B-2)
+        raise VersionConflict(Snapshot(dict(n), n["version"]))
+    notes[note_id] = {**n, **change, "version": n["version"] + 1}
     return read(note_id)
 
 server = MCPServer("notes")
@@ -65,8 +67,9 @@ guard = VersionGuard(read=read, write=write, read_tool="get_note", noun="note",
 def get_note(id: str) -> CallToolResult:
     return read_answer(notes[id])
 
-@kit.write_tool(read_tool="get_note", read_arguments={"id": "id"}, destructive=True, idempotent=True, open_world=False)
-def rename_note(id: str, expected_version: str, title: str) -> CallToolResult:
+@kit.write_tool(read_tool="get_note", read_arguments={"id": "id"}, version_argument="expected_version",
+                destructive=True, idempotent=True, open_world=False)
+def rename_note(id: str, expected_version: int, title: str) -> CallToolResult:
     return guard.apply(id, expected_version, {"title": title})
 ```
 
@@ -81,44 +84,58 @@ Every write result carries the shape as the member `mws` of `structuredContent`,
 own output:
 
 ```json
-{ "note": { "id": "n-1", "title": "Plan", "version": "2" },
+{ "note": { "id": "n-1", "title": "Plan", "version": 2 },
   "mws": { "shape": "write-result/0.1",
            "outcome": "applied",
-           "repeat": "no",
+           "repeat": "same_version",
            "operation": "update",
-           "object": { "type": "note", "id": "n-1", "version": "2" },
+           "object": { "type": "note", "id": "n-1", "version": 2 },
            "changed": ["/title"] } }
 ```
 
 | Member | Values |
 |---|---|
-| `outcome` | `applied`, `not_applied`, `partial`, `unknown`, `accepted`. The kit sets `isError: true` for `not_applied`, `partial` and `unknown`. |
-| `repeat` | `no`, `yes`, `same_key`, `same_version`, `read_first`. Never `yes` with `unknown`, `partial` or `accepted` (the kit refuses to build that). |
-| `object` | `type`, `id`, `version`, `scope`, each a string. No `version` on `not_applied`. |
-| `changed` | JSON Pointers into the object as the read tool returns it. `[]` says nothing changed; a missing member says nothing. |
-| `items`, `applied_count` | One entry per item or step: `index`, `id`, `version`, `outcome` (`applied`, `not_applied`, `not_attempted`, `unknown`), `code`, `message`. |
-| `code`, `message`, `argument` | A stable code (`conflict`, `locked`, `version_required`, `invalid_argument`, `no_answer`, `not_sent`, or the server's own), words, and a JSON Pointer to the refused argument. |
-| `conflict` | `current_version` (left out when there is none), `version_source`, `current_state`, `omitted`, `held_by`. |
-| `read_with` | `{tool, arguments}`: the read that shows the current state. |
-| `replayed`, `operation`, `version_argument` | A replayed answer to a repeated idempotency key; the kind of write; the argument that takes the version. |
+| `outcome` | `applied`, `not_applied`, `partial`, `unknown`, `accepted`. The kit sets `isError: true` for `not_applied`, `partial` and `unknown`. `accepted` is only for an operation the backend completes asynchronously, and carries no `changed` and no `object.version`. |
+| `repeat` | `no`, `yes`, `same_key`, `same_version`, `read_first`. After `applied`: `same_key` where the call carried an idempotency key, `same_version` where it carried a version, else `no`. `yes` only with `not_applied`. Every conflict: `read_first`. |
+| `object` | `type`, `id`, `version`, `scope`, `parent` (`type`, `id`, `version` of the object written inside). No `version` on `not_applied`. |
+| ids and versions | A string or an integer, in the JSON type the tool's argument for the value accepts (an integer beyond 2^53-1 is given as a string). The kit passes them through as your read returns them. |
+| `changed` | JSON Pointers into the object as the read tool returns it. `[]` says nothing changed; a missing member says nothing. A create lists the fields the call set (not server-managed fields, defaults or the scope argument), or `[""]`; a delete leaves it out. |
+| `items`, `applied_count` | One entry per item or step: `index` (an item of a list the call gave), `step`, `id` (once the object exists), `version`, `outcome` (`applied`, `not_applied`, `not_attempted`, `unknown`), `code`, `message`, and `conflict` for that item's object. A selector write lists the objects not applied by `id`, with `applied_count`; one that matched nothing is `applied`, `applied_count: 0`, `items: []`. |
+| `code`, `message` | A stable code and words. The 13 reserved codes: `conflict`, `locked`, `version_required`, `invalid_argument`, `not_found`, `idempotency_key_reused` and `unavailable`, `not_sent` (with `not_applied`); `in_progress`, `key_not_known`, `no_answer`, `backend_error`, `internal_error` (with `unknown`). A server may define its own. |
+| `argument`, `argument_errors` | A JSON Pointer to the refused argument, and every refused argument with its own `code` and `message`. |
+| `conflict` | `current_version` (left out when there is none), `checked_by` (`backend` or `server`), `current_state`, `omitted`, `held_by`. A refusal because of several objects puts each object's conflict in its item, and has none at the top level. |
+| `read_with` | `{tool, arguments}`: a read tool and the arguments that address the object written. For a create, whose answer may have no id, a list or search whose arguments find the object; a read by key is better where the store can answer one. |
+| `replayed`, `operation`, `version_argument` | This call repeated an earlier one with the same idempotency key and applied nothing; the kind of write; the argument that takes the version. |
 
-The content has two text blocks. The first states the outcome in plain words, opening with
-"Applied:", "Not applied:", "Partly applied:", "Outcome unknown:" or "Accepted:", and gives the facts
-a caller acts on, every value quoted or as JSON. The second is the serialized `structuredContent`.
+The content has two text blocks. The first is generated from the shape: it opens with "Applied:",
+"Not applied:", "Partly applied:", "Outcome unknown:" or "Accepted:", marks a replay, names the
+changed fields and the version now, gives the instruction that `repeat` implies and the read to
+make, and does not restate the current state in prose. The second is `structuredContent`
+serialized as compact JSON, so that it parses back equal to it. Both kits render the first block by
+the same rules: `tests/golden/first-sentence.json` is the TypeScript kit's golden file, byte for byte.
+
+The shape is also returned by a read tool registered with the kit when it refuses its input
+(`not_applied`, `invalid_argument`); a read tool's answers do not carry it.
 
 **Output schema.** Each write tool registered with `kit.write_tool` advertises an `outputSchema`
 (`mws_kit.output_schema`): `mws` is always required, the tool's own output members (pass their
-schema as `output=`) are required only where `mws.outcome` is `applied`, and the shape's schema is
-inlined under `$defs.write_result`. Results with `isError: true` therefore conform too. The shape's
-schema ships as `mws_kit/write-result-0.1.schema.json` (`mws_kit.WRITE_RESULT_SCHEMA`).
+schema as `output=`) are required only where `mws.outcome` is `applied` (`if`/`then`), the shape's
+schema is inlined under `$defs.write_result`, and `additionalProperties` is never set to `false` on
+`mws`. Results with `isError: true` therefore conform too. The shape's schema ships as
+`mws_kit/write-result-0.1.schema.json` (`mws_kit.WRITE_RESULT_SCHEMA`), under CC BY 4.0; it is the
+same file as the specification's `spec/shapes/write-result-0.1.schema.json` and the TypeScript kit's.
 
 How the SDK generates output schemas, and what the kit does about it: both SDK lines derive an
 `outputSchema` from a handler's return annotation, and neither does so for a handler annotated
 `-> CallToolResult`, which is what kit handlers return. The kit sets the schema on the registered
-tool itself. SDK 1.x also validates a returned `CallToolResult` against a pydantic model whenever a
-schema is set, so on 1.x the kit adds a model that accepts any object; the kit's builders check the
-shape themselves (`assert_shape`). The SDK clients of both lines validate results against the
-advertised schema, and the tests run them.
+tool itself. If you let the SDK generate the schema from a pydantic return type instead, add an
+`mws` member to it and mark the type's own members `Optional` (with a default): otherwise the
+schema requires them on error results, which carry only `mws`. SDK 1.x also validates a returned
+`CallToolResult` against a pydantic model whenever a schema is set, so on 1.x the kit adds a model
+that accepts any object. The kit checks every write result against the shape before it is returned
+(`assert_shape`) and fails closed: a malformed result becomes `unknown` with
+`code: "internal_error"`. The SDK clients of both lines validate results against the advertised
+schema and reject the whole result on any mismatch; the tests run them.
 
 ## Helpers
 
@@ -130,10 +147,12 @@ advertised schema, and the tests run them.
 
 | Situation | Result |
 |---|---|
-| The version matches | `applied`, `object.version` the new version, `changed` the fields that differ (JSON Pointers) |
-| It does not match, or `write` raises `VersionConflict` | `not_applied`, `code: "conflict"`, `repeat: "read_first"`, `conflict.current_version`, `read_with`, `version_argument`; `current_state` only with `state_fields` (the fields listed there, minus `omit`; every other field named in `omitted`) |
+| The version matches | `applied`, `object.version` the new version, `changed` the fields that differ (JSON Pointers), `repeat: "same_version"` |
+| It does not match (`checked_by: "server"`), or `write` raises `VersionConflict` (`checked_by: "backend"`) | `not_applied`, `code: "conflict"`, `repeat: "read_first"`, `conflict.current_version`, `read_with`, `version_argument`; `current_state` only with `state_fields` (the fields listed there, minus `omit`; every other field named in `omitted`) |
 | No version, with `require_version=True` (the default) | `not_applied`, `code: "version_required"`, `argument: "/expected_version"` |
 | `write` loses the answer (timeout, reset) | `unknown`, `code: "no_answer"`, `repeat: "same_version"` |
+| `write` crashes for another reason | `unknown`, `code: "internal_error"`, `repeat: "same_version"` |
+| The object does not exist | `not_applied`, `code: "not_found"` |
 | The request was never sent (connection refused) | `not_applied`, `code: "not_sent"` |
 
 Addresses **MWS-CONC-2** (refuse a stale write), **MWS-CONC-4** (a conflict is an error and nothing
@@ -143,14 +162,16 @@ write tool accepts), **MWS-RES-4** (receipt), and **MWS-CONC-1** by requiring th
 Where the backend can check the version (an `If-Match` precondition, a conditional update), pass
 `expected_version` on in `write` and raise `VersionConflict` when it refuses: that is the reliable
 form (Annex B-2). The guard's own comparison runs under a per-object lock in this process
-(Annex B-3, B-4); a writer outside the process can still slip in between. If your backend cannot
-check versions, say so in the tool's description (MWS-CONC-5) and set `version_source="server"`.
+(Annex B-3, B-4); a writer outside the process can still slip in between. With `precheck=False` the
+guard leaves the comparison to `write`, so every conflict is the backend's. If your backend cannot
+check versions, say so in the tool's description (MWS-CONC-5). Versions and ids pass through in the
+type `read` returns them; make that the type the tool's version argument accepts.
 
 **What a conflict shows.** `state_fields` is the allow-list for `conflict.current_state`: the
 top-level fields the caller may read through the read tool and that never hold a secret. Every other
 field of the state is named in `conflict.omitted`, and `omit` removes fields even where the list
 names them. Without `state_fields`, a conflict carries no `current_state`: it gives
-`repeat: "read_first"` with `read_with`, and the caller reads the object (draft B-9 allows exactly
+`repeat: "read_first"` with `read_with`, and the caller reads the object (B-9 allows exactly
 this). The kit never copies the whole state your `read` returns into a result by default.
 
 ### 2. Retry keys
@@ -158,8 +179,10 @@ this). The kit never copies the whole state your `read` returns into a result by
 `Idempotency(store, ttl=..., wait=...)` runs a write at most once per idempotency key:
 `run(scope=..., key=..., arguments=..., write=..., read_with=...)`, or `run_async`.
 
-- The same key with the same arguments: applied once; a repeat gets the first outcome with
-  `replayed: true`.
+- The same key with the same arguments: applied once. Every answer describes the write the key
+  identifies: the first answer and its repeats say `repeat: "same_key"`, and a repeat keeps the first
+  answer's `outcome`, `code`, `object` and `changed` and adds `replayed: true` (a first call whose
+  answer was lost: `unknown`, `no_answer`, `replayed: true`).
 - The same key with other arguments: refused (`code: "idempotency_key_reused"`), nothing applied.
 - A different key: a new write.
 - Concurrent calls with one key, from threads or asyncio tasks: one writes; the others wait for its
@@ -167,7 +190,12 @@ this). The kit never copies the whole state your `read` returns into a result by
   `repeat: "same_key"`).
 - A first call that applied nothing releases the key; one whose outcome is unknown keeps it, so a
   repeat applies nothing. That answer (and its replay) says `repeat: "read_first"` with the read
-  that settles it, and to send the write again with a new key if the read shows it was not applied.
+  that settles it, and to send the write again with a new key if the read shows it was not applied:
+  a repeat with the same key only replays the open answer. An applied, partial or accepted first
+  answer, and its replays, say `repeat: "same_key"`.
+- With `refuse_unvouched_keys=True`, a key that is a UUIDv7 made before this process started and
+  that has no record is answered `unknown` with `code: "key_not_known"` and `repeat: "read_first"`,
+  and nothing is applied: its record may have been lost in a restart (Annex B-5).
 
 `IdempotencyStore` (and `AsyncIdempotencyStore`) is the protocol for your own store;
 `InMemoryIdempotencyStore` keeps keys in this process with a time to live. `describe()` gives a
@@ -191,8 +219,10 @@ mode, and ignores arguments the model does not define. By default, therefore:
 `WriteSafety(server)` checks every call to a kit tool against the tool's schema before the SDK sees
 it: no conversion of any kind, unknown arguments refused (and `additionalProperties: false`
 advertised), every declared constraint enforced. The refusal is `not_applied` with
-`code: "invalid_argument"` and `argument` (a JSON Pointer), and the text names each argument, what
+`code: "invalid_argument"`, `argument` (a JSON Pointer to the first argument at fault) and
+`argument_errors` (every one, with its own code and message); the text names each argument, what
 was expected and what was sent, for example `Argument "count": expected integer, got string "5"`.
+Where the tool's `version_argument` is required and missing, the code is `version_required`.
 
 The checker supports the keywords pydantic and hand-written schemas use and refuses a schema with
 any other validation keyword (`UnsupportedSchema`), so it never skips a constraint. `WriteSafety(server,
@@ -204,15 +234,18 @@ Addresses **MWS-IN-1**, **IN-2**, **IN-3**, **IN-4**, **IN-6** and **IN-7**.
 ### 4. Result builders
 
 `applied`, `accepted`, `not_applied`, `partial`, `conflict`, `unknown_outcome`, plus `item`,
-`read_with` and `pointer`. Each builds the `CallToolResult` with the shape, both text blocks and the
-right `isError`, and `assert_shape` refuses a result that breaks a rule of the shape (a version in
-`object` on `not_applied`, `repeat: "yes"` on `unknown` or after an applied delete, `read_first`
-with neither `read_with` nor `object.id`, `same_key` or `same_version` without the key or version
-the call carried, an open item outside `unknown`, a `current_version` with neither state nor
-`read_first`, a `null` member, and more). The first text block names the read wherever `read_with`
-is given. `as_replay` marks a stored result as a replay. `read_result` reads a result as the
-draft's reader rules say: another MAJOR version, or an unknown `outcome`, reads as no shape, and
-unknown or malformed members are left out.
+`conflict_info`, `read_with` and `pointer`. Each builds the `CallToolResult` with the shape, both
+text blocks and the right `isError`, and `assert_shape` refuses a result that breaks a rule of the
+shape: a reserved code with the wrong outcome, `repeat: "yes"` other than on `not_applied`, a
+conflict without `read_first` and `read_with`, `read_first` with neither `read_with` nor
+`object.id`, `same_key` or `same_version` without the key or version the call carried, an open
+item outside `unknown`, a version in `object` on `not_applied` or `accepted`, `changed` on
+`accepted`, an item with none of `index`, `step` and `id`, an id or version that is neither a
+string nor an integer within 2^53-1, an empty `current_version`, a `null` member, and more. The
+first text block names the read wherever `read_with` is given. `as_replay` and `restate` derive a
+result from a stored one, generating its text again. `read_result` reads a result as B-9's reader
+rules say: a result of another version reads as no shape, and unknown or malformed members are
+left out.
 
 Addresses **MWS-RES-1** (report success only for an `applied` write, and `changed: []` for a
 no-op), **MWS-RES-2** (a failure is an error and says what remains applied), **MWS-RES-3** and
@@ -226,16 +259,21 @@ that settles it, and sets `repeat` to `read_first`, or to `same_key` / `same_ver
 carried a key or version that guards a repeat. `guard_write` and `guard_write_async` run a write and
 map what it raises: `NotAppliedError` and an unsent request (connection refused, name not resolved,
 connect errors of httpx, aiohttp and urllib3) become `not_applied`; anything else becomes `unknown`,
-with `code: "no_answer"` for a timeout or a lost connection and `code: "internal_error"` for any
-other error. Only an explicit cause (`raise ... from ...`) is followed: an error raised while
-another was being handled is classified by itself. requests wraps its connection errors without
-an explicit cause, so they read as `unknown` (the cautious reading); raise `NotAppliedError` yourself
-where you know that nothing was sent. Raw exception messages are not copied into results (a client error can
-carry a URL with a token); only the class name is given, or the message of an `OutcomeUnknownError`
-you raise yourself.
+with `code: "no_answer"` where the error says an answer was lost (a timeout, a reset connection,
+`OutcomeUnknownError`) and `code: "internal_error"` for any other error. Only an explicit cause
+(`raise ... from ...`) is followed: an error raised while another was being handled is classified
+by itself. requests wraps its connection errors without an explicit cause, so they read as
+`unknown` (the cautious reading); raise `NotAppliedError` yourself where you know that nothing was
+sent. Raw exception messages are not copied into results (a client error can carry a URL with a
+token); only the class name is given, or the message of an `OutcomeUnknownError` you raise
+yourself.
 
-`kit.write_tool` applies the same mapping to any exception that escapes a handler, with `read_with`
-built from `read_tool` and `read_arguments`. Addresses **MWS-RES-2**, and **MWS-SEC-1** in part.
+`kit.write_tool` also handles an exception that escapes a handler, with `read_with` built from
+`read_tool` and `read_arguments`: it becomes `unknown` with `code: "internal_error"`. On SDK 1.x,
+where the kit sees the exception itself, `NotAppliedError` and an unsent request become
+`not_applied` and `OutcomeUnknownError` `no_answer`; on SDK 2.x the middleware sees only the SDK's
+error text. Return results from your handlers (with `guard_write`) rather than raise. Addresses
+**MWS-RES-2**, and **MWS-SEC-1** in part.
 
 ### 6. Annotations
 
@@ -248,10 +286,14 @@ deliberate choice.
 
 ### Wiring into the SDK
 
-`WriteSafety(server)` hooks the SDK's tool manager (`server._tool_manager.call_tool`) on that one
-server instance; both SDK lines route every `tools/call` through it. If a future SDK moves it, the
-kit refuses to start (`IntegrationError`) rather than run without its checks. Tools registered
-directly on the server (`@server.tool()`) are not checked; `kit.unchecked_tools()` lists them.
+On SDK 2.x, `WriteSafety(server)` adds itself to the server's public middleware chain
+(`server.middleware`, marked provisional by the SDK), which sees every `tools/call` before the SDK
+validates it. A call made in-process with `server.call_tool(...)` does not pass through middleware;
+calls from clients do. On SDK 1.x, which has no middleware, it wraps `call_tool` on the server's tool
+manager (`server._tool_manager`, a private attribute); if a future 1.x moves it, the kit refuses to
+start (`IntegrationError`) rather than run without its checks. On both lines, registration publishes
+the strict input schema and the output schema on the registered tool. Tools registered directly on
+the server (`@server.tool()`) are not checked; `kit.unchecked_tools()` lists them.
 
 ## mcp-writecheck says X violated: use helper Y
 
@@ -261,18 +303,18 @@ directly on the server (`@server.tool()`) are not checked; `kit.unchecked_tools(
 | MWS-CONC-2 | A stale write or delete was applied | `VersionGuard.apply` / `.delete` |
 | MWS-CONC-3 | Two concurrent writes both succeeded and one was lost | `VersionGuard` (with a version, one of the two is refused); a field patch in `write` |
 | MWS-CONC-4 | A conflict was not an error, or was applied | `VersionGuard`, or `conflict()` |
-| MWS-CONC-6 | A conflict carried neither the current state nor a re-read instruction | `conflict()` (`current_state`, `version_argument`, `read_with`) |
+| MWS-CONC-6 | A conflict carried neither the current state nor a re-read instruction | `conflict()` (`current_state`, `version_argument`, `read_with`); `conflict_info()` per item |
 | MWS-RES-1 | Success was reported and the state is not in effect | `applied()` only after the write is in effect; `changed: []` for a no-op |
 | MWS-RES-2 | A failure looked like success, hid what was applied, or invited a blind retry | `not_applied()`, `partial()`, `unknown_outcome()`, `guard_write()`; `kit.write_tool` for escaped exceptions |
-| MWS-RES-3 | A create lost the identifier | `applied(object={"id": ...})`; `items` with each created `id` on a partial create |
+| MWS-RES-3 | A create lost the identifier | `applied(object={"id": ...})`; `items` with each created `id` on a partial create; `object.parent` for an object created inside another |
 | MWS-RES-4 | A receipt lacked the id, the changed fields or the version | `applied(object=..., changed=...)`; `VersionGuard` fills both |
 | MWS-ATOM-1 | A multi-item write reported success, or did not say which items were applied | `partial()` / `not_applied(items=...)` with `item()` for every item |
 | MWS-RETRY-1 | A create made two objects for one intended write | `Idempotency` and an `idempotency_key` argument |
-| MWS-RETRY-2 | A key was applied twice, or a reused key with other arguments was accepted | `Idempotency` with a store shared by every process |
+| MWS-RETRY-2 | A key was applied twice, a reused key with other arguments was accepted, or a repeat did not give the first outcome | `Idempotency` with a store shared by every process; `refuse_unvouched_keys` after a restart |
 | MWS-IN-1, IN-6 | A wrong type was converted | `WriteSafety(server)` (strict inputs) |
 | MWS-IN-2, IN-7 | An unknown argument was dropped | `WriteSafety(server)`; `strict_schema()` |
 | MWS-IN-3 | A call outside a declared constraint succeeded | `WriteSafety(server)`; declare the constraint with pydantic `Field(...)` |
-| MWS-IN-4 | A refusal was not an error, or did not name the argument | `refuse_arguments()` (through `WriteSafety`) |
+| MWS-IN-4 | A refusal was not an error, or did not name the argument | `refuse_arguments()` (through `WriteSafety`): `argument`, `argument_errors` |
 | MWS-ANN-4 | A tool left `readOnlyHint` or `destructiveHint` to the default | `kit.read_tool` / `kit.write_tool`; `kit.missing_hints()` |
 | MWS-ANN-1, ANN-2, ANN-3, ANN-5 | A hint claims more than the tool does | Correct the hint in `kit.write_tool(...)`: the kit cannot know what your tool does |
 

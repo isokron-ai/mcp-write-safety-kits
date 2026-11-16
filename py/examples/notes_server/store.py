@@ -1,9 +1,8 @@
 """The notes backend: an in-memory store with its own version check.
 
-Every note has a version, a string holding a number that grows by one on every write that changes
-the note and on nothing else (a string, as the write-result shape gives every version). The
-store's writes take the version the caller read and refuse a mismatch atomically (the reliable form
-of a version check, MWS Annex B-2): the server's tools pass the version on.
+Every note has a version, an integer that grows by one on every write that changes the note and on
+nothing else. The store's writes take the version the caller read and refuse a mismatch atomically
+(the reliable form of a version check, MWS Annex B-2): the server's tools pass the version on.
 """
 
 from __future__ import annotations
@@ -50,11 +49,11 @@ class NoteStore:
         with self._lock:
             note_id = f"n-{self._next}"
             self._next += 1
-            note = {"id": note_id, "title": title, "body": body, "tags": list(dict.fromkeys(tags)), "version": "1"}
+            note = {"id": note_id, "title": title, "body": body, "tags": list(dict.fromkeys(tags)), "version": 1}
             self._notes[note_id] = note
             return copy.deepcopy(note)
 
-    def _current(self, note_id: str, expected_version: str | None) -> dict[str, Any]:
+    def _current(self, note_id: str, expected_version: int | None) -> dict[str, Any]:
         n = self._notes.get(note_id)
         if n is None:
             raise NotAppliedError(f'note "{note_id}" does not exist', code="not_found", object={"type": "note", "id": note_id})
@@ -62,17 +61,17 @@ class NoteStore:
             raise VersionConflict(Snapshot(copy.deepcopy(n), n["version"]))
         return n
 
-    def patch(self, note_id: str, change: Mapping[str, Any], expected_version: str | None) -> Snapshot:
+    def patch(self, note_id: str, change: Mapping[str, Any], expected_version: int | None) -> Snapshot:
         """Sets the fields named in ``change`` and nothing else (a field patch)."""
         with self._lock:
             n = self._current(note_id, expected_version)
             new = {**n, **{k: (list(dict.fromkeys(v)) if k == "tags" else v) for k, v in change.items() if k in FIELDS}}
             if any(new[k] != n[k] for k in FIELDS):
-                new["version"] = str(int(n["version"]) + 1)
+                new["version"] = n["version"] + 1
                 self._notes[note_id] = new
             return Snapshot(copy.deepcopy(self._notes[note_id]), self._notes[note_id]["version"])
 
-    def delete(self, note_id: str, _change: Any, expected_version: str | None) -> None:
+    def delete(self, note_id: str, _change: Any, expected_version: int | None) -> None:
         with self._lock:
             self._current(note_id, expected_version)
             del self._notes[note_id]
@@ -84,7 +83,7 @@ class NoteStore:
             if tag in n["tags"]:
                 return copy.deepcopy(n), False
             n["tags"] = [*n["tags"], tag]
-            n["version"] = str(int(n["version"]) + 1)
+            n["version"] = n["version"] + 1
             return copy.deepcopy(n), True
 
     def remove_tag(self, note_id: str, tag: str) -> tuple[dict[str, Any], bool]:
@@ -93,24 +92,25 @@ class NoteStore:
             if tag not in n["tags"]:
                 return copy.deepcopy(n), False
             n["tags"] = [t for t in n["tags"] if t != tag]
-            n["version"] = str(int(n["version"]) + 1)
+            n["version"] = n["version"] + 1
             return copy.deepcopy(n), True
 
     def delete_many(
-        self, ids: Sequence[str], expected_versions: Sequence[str] | None
-    ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
+        self, ids: Sequence[str], expected_versions: Sequence[int] | None
+    ) -> tuple[list[dict[str, Any]], dict[str, tuple[str, dict[str, Any] | None]]]:
         """All or nothing: checks every note first, deletes only if every check passes.
 
-        Returns (deleted notes, failures); with any failure nothing is deleted.
+        Returns (deleted notes, failures by id as (code, current note or None)); with any failure
+        nothing is deleted.
         """
         with self._lock:
-            failures: list[tuple[str, str]] = []
+            failures: dict[str, tuple[str, dict[str, Any] | None]] = {}
             for i, note_id in enumerate(ids):
                 n = self._notes.get(note_id)
                 if n is None:
-                    failures.append((note_id, "does not exist"))
+                    failures[note_id] = ("not_found", None)
                 elif expected_versions is not None and n["version"] != expected_versions[i]:
-                    failures.append((note_id, f'changed since the version you read: version is now "{n["version"]}"'))
+                    failures[note_id] = ("conflict", copy.deepcopy(n))
             if failures:
                 return [], failures
             deleted = [self._notes.pop(note_id) for note_id in ids]

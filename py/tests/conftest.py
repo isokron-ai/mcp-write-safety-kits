@@ -48,7 +48,19 @@ class Called:
 
 
 async def call(server: Any, name: str, args: dict[str, Any]) -> Called:
-    return Called(await server.call_tool(name, args))
+    """A call through a real client session, so that it passes the server's whole call path
+    (SDK 2.x middleware included). The SDK's client validates structuredContent against the
+    tool's outputSchema."""
+    try:
+        from mcp import Client  # SDK 2.x
+
+        async with Client(server) as c:
+            return Called(await c.call_tool(name, args))
+    except ImportError:  # SDK 1.x
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        async with create_connected_server_and_client_session(server._mcp_server) as c:
+            return Called(await c.call_tool(name, args))
 
 
 @pytest.fixture

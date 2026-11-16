@@ -1,0 +1,197 @@
+[
+  {
+    "name": "applied update with version",
+    "shape": {
+      "shape": "write-result/0.1",
+      "outcome": "applied",
+      "repeat": "same_version",
+      "operation": "update",
+      "object": {
+        "type": "item",
+        "id": 42,
+        "version": 8
+      },
+      "changed": [
+        "/title"
+      ],
+      "read_with": {
+        "tool": "get_item",
+        "arguments": {
+          "id": 42
+        }
+      },
+      "version_argument": "expected_version"
+    },
+    "options": {
+      "summary": "updated item 42",
+      "sentVersion": 7
+    },
+    "text": "Applied: updated item 42.\nChanged: \"/title\".\nVersion now: 8.\nSend the call again only with the same expected_version 7; or first read it with \"get_item\" and the arguments {\"id\":42}."
+  },
+  {
+    "name": "applied create with key",
+    "shape": {
+      "shape": "write-result/0.1",
+      "outcome": "applied",
+      "repeat": "same_key",
+      "operation": "create",
+      "object": {
+        "type": "item",
+        "id": 43,
+        "version": 1
+      },
+      "changed": [
+        "/title",
+        "/labels"
+      ]
+    },
+    "options": {
+      "summary": "created item 43",
+      "keyArgument": "idempotency_key",
+      "key": "k-1234567"
+    },
+    "text": "Applied: created item 43.\nChanged: \"/title\", \"/labels\".\nVersion now: 1.\nSend the call again only with the same idempotency_key \"k-1234567\"."
+  },
+  {
+    "name": "replay",
+    "shape": {
+      "shape": "write-result/0.1",
+      "outcome": "applied",
+      "repeat": "same_key",
+      "replayed": true,
+      "object": {
+        "type": "item",
+        "id": 43,
+        "version": 1
+      },
+      "changed": [
+        "/title"
+      ]
+    },
+    "options": {
+      "summary": "created item 43",
+      "keyArgument": "idempotency_key",
+      "key": "k-1234567"
+    },
+    "text": "Applied: created item 43.\nReplay: this call repeats an earlier call with the same idempotency key and applied nothing itself; the answer describes the earlier call's write.\nChanged: \"/title\".\nVersion now: 1.\nSend the call again only with the same idempotency_key \"k-1234567\"."
+  },
+  {
+    "name": "conflict",
+    "shape": {
+      "shape": "write-result/0.1",
+      "outcome": "not_applied",
+      "repeat": "read_first",
+      "code": "conflict",
+      "object": {
+        "type": "item",
+        "id": 42
+      },
+      "conflict": {
+        "current_version": 8,
+        "checked_by": "backend",
+        "current_state": {
+          "title": "Quarterly report"
+        },
+        "omitted": [
+          "/body"
+        ]
+      },
+      "read_with": {
+        "tool": "get_item",
+        "arguments": {
+          "id": 42
+        }
+      },
+      "version_argument": "expected_version"
+    },
+    "options": {
+      "summary": "item 42 changed since version 7"
+    },
+    "text": "Not applied: item 42 changed since version 7. Nothing was changed.\nIts current state and version are in the JSON below.\nBefore writing again, read it with \"get_item\" and the arguments {\"id\":42} and build the write from what the read shows."
+  },
+  {
+    "name": "invalid argument",
+    "shape": {
+      "shape": "write-result/0.1",
+      "outcome": "not_applied",
+      "repeat": "no",
+      "code": "invalid_argument",
+      "argument": "/priority"
+    },
+    "options": {
+      "summary": "argument \"priority\" was refused: expected integer, got string \"5\""
+    },
+    "text": "Not applied: argument \"priority\" was refused: expected integer, got string \"5\". Nothing was changed.\nDo not send the same call again."
+  },
+  {
+    "name": "no answer",
+    "shape": {
+      "shape": "write-result/0.1",
+      "outcome": "unknown",
+      "repeat": "read_first",
+      "code": "no_answer",
+      "object": {
+        "type": "item",
+        "id": 42
+      },
+      "read_with": {
+        "tool": "get_item",
+        "arguments": {
+          "id": 42
+        }
+      }
+    },
+    "options": {
+      "summary": "the update of item 42 was sent and no answer arrived"
+    },
+    "text": "Outcome unknown: the update of item 42 was sent and no answer arrived. It is not known whether the change was applied.\nBefore writing again, read it with \"get_item\" and the arguments {\"id\":42} and build the write from what the read shows."
+  },
+  {
+    "name": "partial",
+    "shape": {
+      "shape": "write-result/0.1",
+      "outcome": "partial",
+      "repeat": "read_first",
+      "items": [
+        {
+          "index": 0,
+          "id": 1,
+          "outcome": "applied"
+        },
+        {
+          "index": 1,
+          "id": 2,
+          "outcome": "not_applied",
+          "code": "not_found"
+        }
+      ],
+      "read_with": {
+        "tool": "list_items",
+        "arguments": {}
+      }
+    },
+    "options": {
+      "summary": "deleted 1 of 2 items"
+    },
+    "text": "Partly applied: deleted 1 of 2 items. Some items remain applied; the JSON below gives the outcome of each.\nBefore writing again, read it with \"list_items\" and the arguments {} and build the write from what the read shows."
+  },
+  {
+    "name": "accepted",
+    "shape": {
+      "shape": "write-result/0.1",
+      "outcome": "accepted",
+      "repeat": "no",
+      "operation": "export",
+      "read_with": {
+        "tool": "get_export",
+        "arguments": {
+          "id": "e1"
+        }
+      }
+    },
+    "options": {
+      "summary": "the export was queued"
+    },
+    "text": "Accepted: the export was queued. The backend has not yet reported the result.\nDo not send the same call again.\nTo see the current state, read it with \"get_export\" and the arguments {\"id\":\"e1\"}."
+  }
+]

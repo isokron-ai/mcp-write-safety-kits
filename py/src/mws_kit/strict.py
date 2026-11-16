@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ._mcp import CallToolResult
-from .result import not_applied, pointer, q
+from .result import _unpointer, not_applied, pointer, q
 
 __all__ = [
     "ArgumentIssue",
@@ -433,20 +433,31 @@ def _validate_keywords(node: Any, path: tuple[str, ...]) -> None:
                 _validate_keywords(sub, (*path, k, str(i)))
 
 
-def refuse_arguments(tool: str, issues: Iterable[ArgumentIssue]) -> CallToolResult:
-    """The tool execution error for refused arguments (MWS-IN-4): ``code: "invalid_argument"``,
-    ``argument`` (a JSON Pointer to the first argument at fault) and ``message``; the text names
-    every argument at fault, what was expected and what was sent, and says nothing was changed.
+def refuse_arguments(tool: str, issues: Iterable[ArgumentIssue], *, version_argument: str | None = None) -> CallToolResult:
+    """The tool execution error for refused arguments (MWS-IN-4).
 
-    Shape 0.1 has one ``argument`` per result. Where several arguments are refused, the first is
-    named there and every one is named in the text.
+    ``argument`` is a JSON Pointer to the first argument at fault, and ``argument_errors`` lists
+    every one (``argument``, ``code``, ``message``). The text names each argument, what was expected
+    and what was sent, and says nothing was changed. ``code`` is ``invalid_argument``, or
+    ``version_required`` where the version argument (``version_argument``) is required and was not
+    sent: that code takes precedence (B-9, Codes).
     """
-    issues = list(issues)
-    first = issues[0] if issues else ArgumentIssue((), "was refused")
+    issues = list(issues) or [ArgumentIssue((), "was refused")]
+
+    def code_of(i: ArgumentIssue) -> str:
+        missing = i.reason.startswith("is required")
+        return "version_required" if missing and version_argument is not None and i.path == (version_argument,) else "invalid_argument"
+
+    errors = [{"argument": pointer(*i.path), "code": code_of(i), "message": i.reason} for i in issues]
+    first = next((e for e in errors if e["code"] == "version_required"), errors[0])
+    others = [e for e in errors if e is not first]
+    name = _unpointer(first["argument"]) or "(arguments)"
+    more = f" ({len(others)} more below)" if others else ""
     return not_applied(
-        f"the arguments of {q(tool)} were refused",
-        code="invalid_argument",
-        message=first.sentence() + (f" (and {len(issues) - 1} more)" if len(issues) > 1 else ""),
-        argument=pointer(*first.path),
-        notes=[i.sentence() for i in issues[1:]],
+        f"argument {q(name)} was refused: {first['message']}{more}",
+        code=first["code"],
+        message=first["message"],
+        argument=first["argument"],
+        argument_errors=errors,
+        notes=[f"Argument {q(_unpointer(e['argument']))}: {e['message']}" for e in others],
     )

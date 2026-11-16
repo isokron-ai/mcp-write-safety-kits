@@ -155,8 +155,12 @@ def test_refusal_result_names_argument_expected_and_sent_and_says_nothing_change
     assert m["outcome"] == "not_applied" and m["code"] == "invalid_argument" and m["repeat"] == "no"
     assert m["argument"] == "/count"
     t = text_of(r)
-    assert t.startswith('Not applied: the arguments of "update_note" were refused. Nothing was changed.')
-    assert 'Argument "count": expected integer, got string "5"' in t
+    assert t.startswith('Not applied: argument "count" was refused: expected integer, got string "5" (1 more below). Nothing was changed.')
+    assert m["argument_errors"][1] == {
+        "argument": "/asignee",
+        "code": "invalid_argument",
+        "message": 'is not an argument of this tool and was not used (did you mean "assignee"?)',
+    }
     assert 'Argument "asignee": is not an argument of this tool and was not used (did you mean "assignee"?).' in t
 
 

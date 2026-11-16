@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, Union, runtime_checkable
 
 from ._mcp import CallToolResult
-from .result import ReadWith, as_replay, not_applied, pointer, q, read_result
+from .result import ReadWith, as_replay, not_applied, pointer, q, read_result, restate
 from .unknown import RepeatGuard, classify_error, unknown_code, unknown_outcome
 
 __all__ = [
@@ -204,7 +204,18 @@ class Idempotency:
     - a result without the MWS shape: kept if it is a success or an error (an error without the
       shape cannot say whether something was applied, so it is not released).
     - an exception: classified by :func:`mws_kit.classify_error`. A request that was never sent
-      releases the key; anything else is kept as an unknown outcome.
+      releases the key; anything else is kept as an unknown outcome (``no_answer`` for a lost
+      answer, ``internal_error`` otherwise).
+
+    Every answer to a keyed call describes the write that the key identifies (B-9, "A repeat with
+    a key"): the first answer and its replays have ``repeat: "same_key"`` (except ``not_applied``),
+    and a replay keeps the first answer's ``outcome``, ``code``, ``object`` and ``changed`` and adds
+    ``replayed: true``.
+
+    ``refuse_unvouched_keys``: a key with no record that is a UUIDv7 created before this
+    Idempotency started is answered ``unknown`` with ``code: "key_not_known"`` and
+    ``repeat: "read_first"``, and nothing is applied: the record of that key may have been lost in
+    a restart (Annex B-5). Keys of other forms are treated as new.
     """
 
     def __init__(
@@ -215,12 +226,16 @@ class Idempotency:
         wait: float = 10.0,
         key_arg: str = "idempotency_key",
         poll: float = 0.005,
+        refuse_unvouched_keys: bool = False,
     ) -> None:
         self.store: _Store = store if store is not None else InMemoryIdempotencyStore()
         self.ttl = ttl
         self.wait = wait
         self.key_arg = key_arg
         self.poll = poll
+        self.refuse_unvouched_keys = refuse_unvouched_keys
+        #: When this Idempotency (and so an in-memory store) started, in Unix seconds.
+        self.started = time.time()
 
     def describe(self) -> str:
         """A sentence for the tool's description (MWS-RETRY-1 guidance)."""
@@ -284,6 +299,45 @@ class Idempotency:
             True,
         )
 
+    def _key_not_known(self, key: str, read_with: ReadWith | Mapping[str, Any]) -> CallToolResult:
+        return unknown_outcome(
+            f"this server has no record of the {self.key_arg} {q(key)}, which was made before it started, and this "
+            "call applied nothing",
+            read_with=read_with,
+            code="key_not_known",
+            notes=["An earlier call with this key may have been applied before a restart"],
+        )
+
+    def _unvouched(self, key: str) -> bool:
+        if not self.refuse_unvouched_keys:
+            return False
+        ms = _uuid7_ms(key)
+        return ms is not None and ms / 1000 < self.started
+
+    def _open_note(self, key: str) -> str:
+        return (
+            f"A repeat with the same {self.key_arg} {q(key)} applies nothing and returns this answer. If the "
+            f"read shows that the write was not applied, send it again with a new {self.key_arg}"
+        )
+
+    def _first_answer(self, result: CallToolResult, key: str) -> CallToolResult:
+        """The first answer to a keyed call: ``repeat: "same_key"`` where the write the key identifies
+        was applied, accepted or partly applied. Where its outcome is open, ``repeat: "read_first"``
+        with the read, and a note to use a new key once the read shows nothing was applied: the key
+        is kept, so a repeat with it only replays the open answer (B-9 allows read_first with
+        unknown)."""
+        shape = read_result(result)
+        if shape is None or shape.get("outcome") in (None, "not_applied") or shape.get("code") == "conflict":
+            return result
+        if shape.get("outcome") == "unknown":
+            obj = shape.get("object") or {}
+            if shape.get("repeat") == "read_first" or not (shape.get("read_with") or obj.get("id") is not None):
+                return result
+            return restate(result, {"repeat": "read_first", "version_argument": None}, notes=[self._open_note(key)])
+        if shape.get("repeat") == "same_key":
+            return result
+        return restate(result, {"repeat": "same_key"}, key=(self.key_arg, key))
+
     @staticmethod
     def _keep(result: CallToolResult) -> bool:
         shape = read_result(result)
@@ -316,6 +370,8 @@ class Idempotency:
             raise TypeError("the store is async; use run_async")
         store: IdempotencyStore = self.store  # type: ignore[assignment]
         fp = fingerprint(arguments, exclude=(self.key_arg,))
+        if self._unvouched(key) and store.get(scope, key) is None:
+            return self._key_not_known(key, read_with)
         deadline = time.monotonic() + self.wait
         while True:
             record = store.reserve(scope, key, fp, self.ttl)
@@ -324,12 +380,12 @@ class Idempotency:
             if record.fingerprint != fp:
                 return self._reuse_refused(key)
             if record.state == "done" and record.result is not None:
-                return as_replay(_load(record.result))
+                return as_replay(_load(record.result), key=(self.key_arg, key))
             if time.monotonic() >= deadline:
                 return self._in_progress(key, read_with)
             time.sleep(self.poll)
         try:
-            result = write()
+            result = self._first_answer(write(), key)
         except BaseException as e:
             result, keep = self._after_exception(key, e, read_with, what)
             if keep:
@@ -361,6 +417,8 @@ class Idempotency:
         if key is None:
             return await _maybe(write())
         fp = fingerprint(arguments, exclude=(self.key_arg,))
+        if self._unvouched(key) and await _maybe(self.store.get(scope, key)) is None:
+            return self._key_not_known(key, read_with)
         deadline = time.monotonic() + self.wait
         while True:
             record = await _maybe(self.store.reserve(scope, key, fp, self.ttl))
@@ -369,12 +427,12 @@ class Idempotency:
             if record.fingerprint != fp:
                 return self._reuse_refused(key)
             if record.state == "done" and record.result is not None:
-                return as_replay(_load(record.result))
+                return as_replay(_load(record.result), key=(self.key_arg, key))
             if time.monotonic() >= deadline:
                 return self._in_progress(key, read_with)
             await asyncio.sleep(self.poll)
         try:
-            result = await _maybe(write())
+            result = self._first_answer(await _maybe(write()), key)
         except BaseException as e:  # includes cancellation: the write may have been sent
             result, keep = self._after_exception(key, e, read_with, what)
             if keep:
@@ -389,3 +447,16 @@ class Idempotency:
         else:
             await _maybe(self.store.release(scope, key))
         return result
+
+
+def _uuid7_ms(key: str) -> int | None:
+    """The creation time in milliseconds of a key that is a UUID version 7, else None."""
+    import uuid
+
+    try:
+        u = uuid.UUID(key)
+    except ValueError:
+        return None
+    if u.version != 7:
+        return None
+    return u.int >> 80

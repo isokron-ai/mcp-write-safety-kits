@@ -159,9 +159,12 @@ def _raw(m: dict[str, Any]) -> CallToolResult:
 
 
 def test_reader_drops_unknown_and_malformed_members():
-    got = k.read_result(_raw({"shape": "write-result/0.7", "outcome": "applied", "repeat": 42, "x": 1, "changed": ["/a"]}))
-    assert got == {"shape": "write-result/0.7", "outcome": "applied", "changed": ["/a"]}
-    assert k.read_result(_raw({"shape": "write-result/0.1", "outcome": "weird"})) is None
+    got = k.read_result(_raw({"shape": "write-result/0.1", "outcome": "applied", "repeat": 42, "x": 1, "changed": ["/a"], "object": {"id": True, "version": 3}}))
+    assert got == {"shape": "write-result/0.1", "outcome": "applied", "changed": ["/a"], "object": {"version": 3}}
+    # B-9: the other members are still read where outcome is malformed; outcome is then absent.
+    assert k.read_result(_raw({"shape": "write-result/0.1", "outcome": "weird", "code": "no_answer"})) == {"shape": "write-result/0.1", "code": "no_answer"}
+    # Before 1.0, a reader reads only the version it knows.
+    assert k.read_result(_raw({"shape": "write-result/0.7", "outcome": "applied"})) is None
     assert k.read_result(_raw({"shape": "write-result/0", "outcome": "applied"})) is None
     assert k.read_result(_raw({"shape": "write-result/1.0", "outcome": "applied"})) is None
 

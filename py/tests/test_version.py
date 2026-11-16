@@ -53,10 +53,11 @@ def test_matching_version_writes_and_returns_a_receipt():
     assert structured_of(r) == {
         "shape": "write-result/0.1",
         "outcome": "applied",
-        "repeat": "no",
+        "repeat": "same_version",  # the call carried a version (B-9, Repeat)
         "operation": "update",
-        "object": {"id": "a", "version": "2"},
+        "object": {"id": "a", "version": 2},
         "changed": ["/title"],
+        "version_argument": "expected_version",
     }
     assert s.obj["title"] == "two"
 
@@ -67,10 +68,10 @@ def test_by_default_a_conflict_carries_no_state():
     r = guard(s).apply("a", 1, {"body": "mine"})
     sh = structured_of(r)
     assert sh["code"] == "conflict" and sh["repeat"] == "read_first"
-    assert sh["conflict"] == {"current_version": "2", "version_source": "backend"}
+    assert sh["conflict"] == {"current_version": 2, "checked_by": "server"}
     assert sh["read_with"] == {"tool": "get_thing", "arguments": {"id": "a"}}
     assert "SECRET" not in text_of(r) and "SECRET" not in str(structured_of(r))
-    assert 'read with "get_thing"' in text_of(r)
+    assert 'read it with "get_thing"' in text_of(r)
 
 
 def test_allow_list_carries_only_listed_fields():
@@ -91,8 +92,8 @@ def test_mismatch_is_a_conflict_nothing_written_current_state_carried():
     assert is_error_of(r)
     assert sh["outcome"] == "not_applied"
     assert sh["code"] == "conflict" and sh["repeat"] == "read_first"
-    assert sh["conflict"]["current_version"] == "2"  # a string, as every version in the shape
-    assert sh["conflict"]["version_source"] == "backend"
+    assert sh["conflict"]["current_version"] == 2  # in the type the read returns
+    assert sh["conflict"]["checked_by"] == "server"  # the guard's own comparison
     assert sh["conflict"]["current_state"]["title"] == "other writer"
     assert sh["read_with"] == {"tool": "get_thing", "arguments": {"id": "a"}}
     assert sh["version_argument"] == "expected_version"
@@ -141,7 +142,8 @@ def test_backend_detected_conflict():
 
     g.read = stale_read
     r = g.apply("a", 1, {"title": "x"})
-    assert structured_of(r)["conflict"]["current_version"] == "9"
+    assert structured_of(r)["conflict"]["current_version"] == 9
+    assert structured_of(r)["conflict"]["checked_by"] == "backend"
 
 
 def test_lost_answer_is_unknown_with_version_guard():
@@ -172,7 +174,7 @@ def test_request_not_sent_is_not_applied():
 def test_delete():
     s = Store()
     r = guard(s).delete("a", 1)
-    assert structured_of(r) == {"shape": "write-result/0.1", "outcome": "applied", "repeat": "no", "operation": "delete", "object": {"id": "a"}}
+    assert structured_of(r) == {"shape": "write-result/0.1", "outcome": "applied", "repeat": "same_version", "operation": "delete", "object": {"id": "a"}, "version_argument": "expected_version"}
     assert text_of(r).startswith('Applied: deleted thing "a".')
     assert s.obj is None
 
@@ -235,3 +237,23 @@ def test_omit_and_data_key():
     assert "s3cr3t" not in text_of(r)
     r = g.apply("a", 2, {"title": "x"})
     assert _sc(r)["thing"]["title"] == "x" and structured_of(r)["object"]["type"] == "thing"
+
+
+
+def test_precheck_off_leaves_the_check_to_the_backend():
+    s = Store(check_in_write=True)
+    s.obj["version"] = 5
+    r = guard(s, precheck=False).apply("a", 1, {"title": "x"})
+    sh = structured_of(r)
+    assert sh["code"] == "conflict" and sh["conflict"]["checked_by"] == "backend" and sh["conflict"]["current_version"] == 5
+    assert s.writes == 0
+
+
+def test_lost_answer_vs_crash_codes():
+    s = Store()
+
+    def crash(id, change, expected):
+        raise KeyError("bug")
+
+    r = k.VersionGuard(read=s.read, write=crash, read_tool="get_thing").apply("a", 1, {"title": "x"})
+    assert structured_of(r)["outcome"] == "unknown" and structured_of(r)["code"] == "internal_error"

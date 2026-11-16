@@ -11,9 +11,9 @@ def create(notes, **args):
 
 def test_create_returns_id_and_version(notes):
     o = create(notes, body="b", tags=["a"])
-    assert o == {"type": "note", "id": "n-1", "version": "1"}
+    assert o == {"type": "note", "id": "n-1", "version": 1}
     r = notes("get_note", {"id": "n-1"})
-    assert r.structured == {"id": "n-1", "title": "t", "body": "b", "tags": ["a"], "version": "1"}
+    assert r.structured == {"id": "n-1", "title": "t", "body": "b", "tags": ["a"], "version": 1}
 
 
 def test_create_with_key_is_applied_once(notes):
@@ -28,30 +28,31 @@ def test_create_with_key_is_applied_once(notes):
 
 def test_update_is_a_field_patch_with_a_receipt(notes):
     create(notes, body="keep", tags=["a", "b"])
-    r = notes("update_note", {"id": "n-1", "expected_version": "1", "title": "new"})
+    r = notes("update_note", {"id": "n-1", "expected_version": 1, "title": "new"})
     assert r.shape == {
         "shape": "write-result/0.1",
         "outcome": "applied",
-        "repeat": "no",
+        "repeat": "same_version",
         "operation": "update",
-        "object": {"type": "note", "id": "n-1", "version": "2"},
+        "object": {"type": "note", "id": "n-1", "version": 2},
         "changed": ["/title"],
+        "version_argument": "expected_version",
     }
-    stored = {"id": "n-1", "title": "new", "body": "keep", "tags": ["a", "b"], "version": "2"}
+    stored = {"id": "n-1", "title": "new", "body": "keep", "tags": ["a", "b"], "version": 2}
     assert notes.store.get("n-1") == stored
     assert r.structured["note"] == stored  # the tool's own output beside mws
 
 
 def test_stale_update_is_a_conflict_with_current_state(notes):
     create(notes)
-    notes("update_note", {"id": "n-1", "expected_version": "1", "body": "other writer"})
-    r = notes("update_note", {"id": "n-1", "expected_version": "1", "title": "mine"})
+    notes("update_note", {"id": "n-1", "expected_version": 1, "body": "other writer"})
+    r = notes("update_note", {"id": "n-1", "expected_version": 1, "title": "mine"})
     assert r.is_error
     assert r.shape["code"] == "conflict" and r.shape["repeat"] == "read_first"
     assert r.shape["conflict"] == {
-        "current_version": "2",
-        "version_source": "backend",
-        "current_state": {"id": "n-1", "title": "t", "body": "other writer", "tags": [], "version": "2"},
+        "current_version": 2,
+        "checked_by": "backend",
+        "current_state": {"id": "n-1", "title": "t", "body": "other writer", "tags": [], "version": 2},
     }
     assert "note" not in r.structured
     assert notes.store.get("n-1")["title"] == "t"
@@ -60,33 +61,33 @@ def test_stale_update_is_a_conflict_with_current_state(notes):
 def test_update_needs_the_version_and_a_field(notes):
     create(notes)
     r = notes("update_note", {"id": "n-1", "title": "x"})
-    assert r.is_error and 'Argument "expected_version": is required and was not sent' in r.text
-    assert r.shape["argument"] == "/expected_version"
-    r = notes("update_note", {"id": "n-1", "expected_version": "1"})
+    assert r.is_error and 'argument "expected_version" was refused: is required and was not sent' in r.text
+    assert r.shape["argument"] == "/expected_version" and r.shape["code"] == "version_required"
+    r = notes("update_note", {"id": "n-1", "expected_version": 1})
     assert r.is_error and "no field to change was sent" in r.text
-    r = notes("update_note", {"id": "n-1", "expected_version": 1, "title": "x"})
-    assert r.is_error and 'expected string, got number 1' in r.text
+    r = notes("update_note", {"id": "n-1", "expected_version": "1", "title": "x"})
+    assert r.is_error and 'expected integer, got string "1"' in r.text and r.shape["code"] == "invalid_argument"
 
 
 def test_update_missing_note(notes):
-    r = notes("update_note", {"id": "n-9", "expected_version": "1", "body": "x"})
+    r = notes("update_note", {"id": "n-9", "expected_version": 1, "body": "x"})
     assert r.is_error and r.shape["outcome"] == "not_applied" and r.shape["code"] == "not_found"
 
 
 def test_stale_delete_is_refused(notes):
     create(notes)
     notes("add_tag", {"id": "n-1", "tag": "x"})
-    r = notes("delete_note", {"id": "n-1", "expected_version": "1"})
-    assert r.is_error and r.shape["conflict"]["current_version"] == "2"
+    r = notes("delete_note", {"id": "n-1", "expected_version": 1})
+    assert r.is_error and r.shape["conflict"]["current_version"] == 2
     assert notes.store.get("n-1") is not None
-    r = notes("delete_note", {"id": "n-1", "expected_version": "2"})
+    r = notes("delete_note", {"id": "n-1", "expected_version": 2})
     assert not r.is_error and notes.store.get("n-1") is None
 
 
 def test_tags_are_addressed_by_value(notes):
     """MWS-UPD-2: the address of an element does not shift when the list changes."""
     create(notes, tags=["a", "b", "c"])
-    notes("update_note", {"id": "n-1", "expected_version": "1", "tags": ["z", "a", "b", "c"]})  # another writer inserts
+    notes("update_note", {"id": "n-1", "expected_version": 1, "tags": ["z", "a", "b", "c"]})  # another writer inserts
     r = notes("remove_tag", {"id": "n-1", "tag": "b"})
     assert r.shape["changed"] == ["/tags"]
     assert notes.store.get("n-1")["tags"] == ["z", "a", "c"]
@@ -126,20 +127,23 @@ def test_bulk_delete_checks_versions_unless_forced(notes):
     r = notes("delete_notes", {"ids": [a, b]})
     assert r.is_error and r.shape["code"] == "version_required"
     notes("add_tag", {"id": b, "tag": "x"})
-    r = notes("delete_notes", {"ids": [a, b], "expected_versions": ["1", "1"]})
+    r = notes("delete_notes", {"ids": [a, b], "expected_versions": [1, 1]})
     assert r.is_error
     assert [(i["outcome"], i.get("code")) for i in r.shape["items"]] == [("not_attempted", None), ("not_applied", "conflict")]
-    r = notes("delete_notes", {"ids": [a, b], "expected_versions": ["1", "2"]})
+    # A refusal because of an object's version: the conflict is in the item, none at the top level.
+    assert r.shape["code"] == "conflict" and r.shape["repeat"] == "read_first" and "conflict" not in r.shape
+    assert r.shape["items"][1]["conflict"]["current_version"] == 2 and r.shape["items"][1]["conflict"]["checked_by"] == "backend"
+    r = notes("delete_notes", {"ids": [a, b], "expected_versions": [1, 2]})
     assert not r.is_error and notes.store.list() == []
 
 
 def test_bulk_delete_input_constraints(notes):
     r = notes("delete_notes", {"ids": [], "force": True})
-    assert r.is_error and 'Argument "ids": must have at least 1 items' in r.text
+    assert r.is_error and 'argument "ids" was refused: must have at least 1 items' in r.text
     r = notes("delete_notes", {"ids": ["n-1", "n-1"], "force": True})
     assert r.is_error and "must not repeat an item" in r.text
     r = notes("delete_notes", {"ids": ["n-1"], "force": "true"})
-    assert r.is_error and 'Argument "force": expected boolean, got string "true"' in r.text
+    assert r.is_error and 'argument "force" was refused: expected boolean, got string "true"' in r.text
 
 
 def test_list_and_missing(notes):
@@ -159,13 +163,13 @@ def test_every_write_result_conforms_to_the_advertised_output_schema(notes):
     tools = {t.name: t.model_dump(by_alias=True, exclude_none=True) for t in run(notes.server.list_tools())}
     calls = [
         ("create_note", {"title": "t", "tags": ["a"]}),
-        ("update_note", {"id": "n-1", "expected_version": "1", "body": "b"}),
-        ("update_note", {"id": "n-1", "expected_version": "1", "body": "c"}),
+        ("update_note", {"id": "n-1", "expected_version": 1, "body": "b"}),
         ("update_note", {"id": "n-1", "expected_version": 1, "body": "c"}),
+        ("update_note", {"id": "n-1", "expected_version": "1", "body": "c"}),
         ("add_tag", {"id": "n-1", "tag": "z"}),
         ("remove_tag", {"id": "n-9", "tag": "z"}),
         ("delete_notes", {"ids": ["n-1", "n-9"], "force": True}),
-        ("delete_note", {"id": "n-1", "expected_version": "3"}),
+        ("delete_note", {"id": "n-1", "expected_version": 3}),
     ]
     for name, args in calls:
         r = notes(name, args)
@@ -181,7 +185,7 @@ def test_the_sdk_client_accepts_every_result_against_the_output_schema():
 
     async def go(c):
         r1 = await c.call_tool("create_note", {"title": "a"})
-        r2 = await c.call_tool("update_note", {"id": "n-1", "expected_version": "9", "body": "x"})
+        r2 = await c.call_tool("update_note", {"id": "n-1", "expected_version": 9, "body": "x"})
         r3 = await c.call_tool("delete_notes", {"ids": ["n-1", "n-9"], "force": True})
         return r1, r2, r3
 

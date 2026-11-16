@@ -26,12 +26,12 @@ from store import NoteStore
 
 from mws_kit import (
     Idempotency,
+    conflict_info,
     VersionGuard,
     WriteSafety,
     applied,
     item,
     not_applied,
-    partial,
     pointer,
     q,
     read_answer,
@@ -44,7 +44,7 @@ except ImportError:  # 1.x
     from mcp.server.fastmcp import FastMCP  # type: ignore[no-redef]
 
 Id = Annotated[str, Field(min_length=1, max_length=40, description="A note id, such as n-3.")]
-Version = Annotated[str, Field(min_length=1, max_length=20, pattern=r"^[0-9]+$", description="The version you read, as get_note returns it.")]
+Version = Annotated[int, Field(ge=1, description="The version you read, as get_note returns it.")]
 Title = Annotated[str, Field(min_length=1, max_length=200)]
 Body = Annotated[str, Field(max_length=10_000)]
 Tag = Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9-]*$")]
@@ -55,7 +55,7 @@ INSTRUCTIONS = (
     "Notes with titles, bodies and tags. Every note has a version that changes whenever the note changes. "
     "Writes that change or delete a note need the version you read (expected_version): if the note changed "
     "since, nothing is written and the answer carries the current state and version. Every write answers "
-    "with structuredContent.mws, the write-result shape 0.1 (MWS 0.9 draft Annex B-9)."
+    "with structuredContent.mws, the write-result shape 0.1 (MWS 0.9 Annex B, B-9)."
 )
 
 #: The schema of a note, as get_note returns it: the tool's own output beside mws on create and update.
@@ -66,7 +66,7 @@ NOTE_SCHEMA = {
         "title": {"type": "string"},
         "body": {"type": "string"},
         "tags": {"type": "array", "items": {"type": "string"}},
-        "version": {"type": "string"},
+        "version": {"type": "integer"},
     },
     "required": ["id", "title", "body", "tags", "version"],
 }
@@ -79,8 +79,9 @@ def build(store: NoteStore | None = None) -> tuple[Any, NoteStore]:
     server = FastMCP("notes", instructions=INSTRUCTIONS)
     kit = WriteSafety(server)
     keys = Idempotency(ttl=24 * 3600)
+    # The store checks the version itself, atomically (B-2), so every conflict is the backend's.
     # state_fields: what a conflict may show of a note (every field get_note returns; none is secret).
-    guard = dict(read=store.snapshot, read_tool="get_note", noun="note", object_type="note",
+    guard = dict(read=store.snapshot, read_tool="get_note", noun="note", object_type="note", precheck=False,
                  state_fields=("id", "title", "body", "tags", "version"))
     notes = VersionGuard(write=store.patch, data_key="note", **guard)
     deletes = VersionGuard(write=store.delete, **guard)
@@ -132,7 +133,9 @@ def build(store: NoteStore | None = None) -> tuple[Any, NoteStore]:
                 f"created note {q(n['id'])}",
                 operation="create",
                 object={"type": "note", "id": n["id"], "version": n["version"]},
+                # The fields the call set; a field left to its default is not listed (B-9, Changed fields).
                 changed=[pointer(f) for f in ("title", "body", "tags") if args[f] not in ("", [])],
+                key=("idempotency_key", idempotency_key) if idempotency_key is not None else None,
                 data={"note": n},
             )
 
@@ -147,6 +150,7 @@ def build(store: NoteStore | None = None) -> tuple[Any, NoteStore]:
     @kit.write_tool(
         read_tool="get_note",
         read_arguments={"id": "id"},
+        version_argument="expected_version",
         destructive=True,
         idempotent=True,
         open_world=False,
@@ -179,6 +183,7 @@ def build(store: NoteStore | None = None) -> tuple[Any, NoteStore]:
     @kit.write_tool(
         read_tool="get_note",
         read_arguments={"id": "id"},
+        version_argument="expected_version",
         destructive=True,
         idempotent=True,
         open_world=False,
@@ -264,16 +269,31 @@ def build(store: NoteStore | None = None) -> tuple[Any, NoteStore]:
             )
         deleted, failures = store.delete_many(ids, expected_versions)
         if failures:
-            bad = dict(failures)
-            return partial(
+            # All or nothing: every note is listed, the refused ones with their code (and, for a version
+            # mismatch, the note's own conflict), the rest not attempted. No top-level conflict (B-9, Items).
+            items = []
+            for i, nid in enumerate(ids):
+                if nid not in failures:
+                    items.append(item(i, "not_attempted", id=nid, message="the delete is all or nothing"))
+                    continue
+                code, current = failures[nid]
+                if code == "conflict" and current is not None:
+                    items.append(
+                        item(
+                            i,
+                            "not_applied",
+                            id=nid,
+                            code="conflict",
+                            message="changed since the version you read",
+                            conflict=conflict_info(current_version=current["version"], checked_by="backend", current_state=current),
+                        )
+                    )
+                else:
+                    items.append(item(i, "not_applied", id=nid, code="not_found", message="does not exist"))
+            return not_applied(
                 f"deleted none of the {len(ids)} notes",
                 operation="delete",
-                items=[
-                    item(i, "not_applied", id=nid, code="conflict" if "changed" in bad[nid] else "not_found", message=bad[nid])
-                    if nid in bad
-                    else item(i, "not_attempted", id=nid, message="the delete is all or nothing")
-                    for i, nid in enumerate(ids)
-                ],
+                items=items,
                 read_with=read_with("list_notes"),
             )
         return applied(

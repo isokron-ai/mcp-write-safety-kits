@@ -1,0 +1,55 @@
+"""Builds src/mws_kit/write-result-0.1.schema.json per ALIGN.md section 0 (B-9 v2): JSON, 2-space indent, LF, final newline. Run: python tools/make-write-result-schema.py > src/mws_kit/write-result-0.1.schema.json"""
+import json, sys
+idv = {"$ref": "#/$defs/idv"}
+code = {"type": "string", "pattern": "^[a-z0-9_]+$"}
+ptr = {"type": "string", "pattern": "^(/.*)?$"}
+S = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "CC BY 4.0. MCP Write-Safety Requirements 0.9, Annex B, B-9.",
+  "title": "write-result 0.1 (MWS 0.9, Annex B, B-9)",
+  "description": "The value of structuredContent.mws. Readers ignore members they do not know. additionalProperties is never false here or in any member, so that a later MINOR version stays valid.",
+  "type": "object",
+  "required": ["shape", "outcome"],
+  "properties": {
+    "shape": {"const": "write-result/0.1"},
+    "outcome": {"enum": ["applied", "not_applied", "partial", "unknown", "accepted"]},
+    "repeat": {"enum": ["no", "yes", "same_key", "same_version", "read_first"]},
+    "operation": {"type": "string"},
+    "object": {"type": "object", "properties": {
+      "type": {"type": "string"}, "id": idv, "version": idv, "scope": {"type": "string"},
+      "parent": {"type": "object", "properties": {"type": {"type": "string"}, "id": idv, "version": idv}}}},
+    "changed": {"type": "array", "items": ptr},
+    "replayed": {"const": True},
+    "items": {"type": "array", "items": {
+      "type": "object",
+      "required": ["outcome"],
+      "anyOf": [{"required": ["index"]}, {"required": ["step"]}, {"required": ["id"]}],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "step": {"type": "string"},
+        "id": idv,
+        "version": idv,
+        "outcome": {"enum": ["applied", "not_applied", "not_attempted", "unknown"]},
+        "code": code,
+        "message": {"type": "string"},
+        "conflict": {"$ref": "#/$defs/conflict"}}}},
+    "applied_count": {"type": "integer", "minimum": 0},
+    "code": {"$comment": "Reserved in 0.1: conflict, locked, version_required, invalid_argument, not_found, idempotency_key_reused, in_progress, key_not_known, unavailable, not_sent, no_answer, backend_error, internal_error. A server may define others.", **code},
+    "message": {"type": "string"},
+    "argument": ptr,
+    "argument_errors": {"type": "array", "items": {"type": "object", "required": ["argument"], "properties": {"argument": ptr, "code": code, "message": {"type": "string"}}}},
+    "conflict": {"$ref": "#/$defs/conflict"},
+    "read_with": {"type": "object", "required": ["tool", "arguments"], "properties": {"tool": {"type": "string"}, "arguments": {"type": "object"}}},
+    "version_argument": {"type": "string"},
+  },
+  "$defs": {
+    "idv": {"$comment": "An identifier or a version: a string, or an integer between -(2^53-1) and 2^53-1.", "type": ["string", "integer"]},
+    "conflict": {"type": "object", "properties": {
+      "current_version": idv,
+      "checked_by": {"enum": ["backend", "server"]},
+      "current_state": {"type": "object"},
+      "omitted": {"type": "array", "items": ptr},
+      "held_by": {"type": "string"}}},
+  },
+}
+sys.stdout.write(json.dumps(S, indent=2, ensure_ascii=False) + "\n")

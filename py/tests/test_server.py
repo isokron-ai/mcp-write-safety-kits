@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import json
+
 import pytest
 from mcp.types import CallToolResult
 
@@ -81,10 +83,10 @@ def test_sdk_default_converts_and_drops_but_the_kit_refuses():
 
     # The kit's tool refuses each of them, names the argument, and nothing runs.
     for args, needle in [
-        ({"flag": "true"}, 'Argument "flag": expected boolean, got string "true"'),
-        ({"flag": True, "count": "5"}, 'Argument "count": expected integer, got string "5"'),
-        ({"flag": True, "cuont": 9}, 'Argument "cuont": is not an argument of this tool and was not used (did you mean "count"?).'),
-        ({}, 'Argument "flag": is required and was not sent'),
+        ({"flag": "true"}, 'argument "flag" was refused: expected boolean, got string "true"'),
+        ({"flag": True, "count": "5"}, 'argument "count" was refused: expected integer, got string "5"'),
+        ({"flag": True, "cuont": 9}, 'argument "cuont" was refused: is not an argument of this tool and was not used (did you mean "count"?)'),
+        ({}, 'argument "flag" was refused: is required and was not sent'),
     ]:
         seen.pop("strict", None)
         r = run(call(server, "strict_set", args))
@@ -125,14 +127,16 @@ def test_every_kit_tool_declares_all_four_hints():
 
 
 def test_an_exception_in_a_write_tool_is_an_unknown_outcome_naming_the_read():
-    server, _, seen = make()
+    server, kit, seen = make()
     r = run(call(server, "crashes", {"id": "t-1"}))
     assert seen["crashed"] == "t-1"
     assert r.is_error
     assert r.shape["outcome"] == "unknown" and r.shape["repeat"] == "read_first"
     assert r.shape["read_with"] == {"tool": "get_thing", "arguments": {"id": "t-1"}}
     assert r.shape["code"] == "internal_error"
-    assert "SECRET" not in r.text and "Cause: KeyError" in r.text
+    assert "SECRET" not in r.text and "SECRET" not in json.dumps(r.structured)
+    if kit.hook == "tool_manager":  # SDK 1.x: the kit sees the exception itself
+        assert "Cause: KeyError" in r.text
 
 
 def test_output_schema_is_advertised_and_results_conform():
@@ -150,10 +154,44 @@ def test_output_schema_is_advertised_and_results_conform():
     v.validate(run(call(server, "strict_set", {"flag": "x"})).structured)  # the refusal conforms too
 
 
-def test_an_unsent_request_is_not_applied():
-    server, _, _ = make()
+def test_an_unsent_request_escaping_the_handler():
+    server, kit, _ = make()
     r = run(call(server, "never_sent", {"id": "t-1"}))
-    assert r.is_error and r.shape["outcome"] == "not_applied" and r.shape["code"] == "not_sent" and r.shape["repeat"] == "yes"
+    if kit.hook == "tool_manager":  # SDK 1.x: the kit knows nothing was sent
+        assert r.is_error and r.shape["outcome"] == "not_applied" and r.shape["code"] == "not_sent" and r.shape["repeat"] == "yes"
+    else:  # SDK 2.x middleware sees only the SDK's error text: the cautious reading
+        assert r.is_error and r.shape["outcome"] == "unknown" and r.shape["code"] == "internal_error"
+
+
+def test_a_malformed_result_fails_closed():
+    server = FastMCP("t")
+    kit = k.WriteSafety(server)
+
+    @kit.write_tool(read_tool="get_thing", read_arguments={"id": "id"}, output=False)
+    def bad(id: str) -> CallToolResult:  # noqa: A002
+        return CallToolResult(content=[], structuredContent={"mws": {"shape": "write-result/0.1", "outcome": "unknown", "repeat": "yes"}}, isError=True)
+
+    r = run(call(server, "bad", {"id": "t-1"}))
+    assert r.shape["outcome"] == "unknown" and r.shape["code"] == "internal_error" and r.shape["repeat"] == "read_first"
+
+
+def test_version_required_takes_precedence_over_invalid_argument():
+    server = FastMCP("t")
+    kit = k.WriteSafety(server)
+
+    @kit.write_tool(read_tool="get_thing", version_argument="expected_version")
+    def upd(id: str, expected_version: int, title: str) -> CallToolResult:  # noqa: A002
+        return k.applied("ok")
+
+    r = run(call(server, "upd", {"id": "a", "title": 5}))
+    m = r.shape
+    assert m["code"] == "version_required" and m["argument"] == "/expected_version"
+    assert {e["argument"]: e["code"] for e in m["argument_errors"]} == {"/expected_version": "version_required", "/title": "invalid_argument"}
+
+
+def test_hook_in_use():
+    server, kit, _ = make()
+    assert kit.hook == ("middleware" if SDK == 2 else "tool_manager")
 
 
 def test_read_tool_errors_are_left_to_the_sdk():
@@ -206,7 +244,7 @@ def test_explicit_input_schema():
         return k.applied("ok")
 
     r = run(call(server, "capped", {"n": 4}))
-    assert r.is_error and 'Argument "n": must be at most 3' in r.text and r.shape["argument"] == "/n"
+    assert r.is_error and 'argument "n" was refused: must be at most 3' in r.text and r.shape["argument"] == "/n"
     tools = {t.name: t for t in run(server.list_tools())}
     assert schema_of(tools["capped"])["properties"]["n"]["maximum"] == 3
 
