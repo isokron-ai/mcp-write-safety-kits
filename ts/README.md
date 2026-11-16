@@ -27,10 +27,14 @@ Using the kit helps a server meet MWS. It does not make a server conformant, and
 
 ## Quick start
 
-Wrap a write handler: strict inputs and explicit annotations come from `defineTool`, the version check and the receipt from `compareAndSet`.
+Wrap a write handler: strict inputs and explicit annotations come from `defineTool`, the version check and the receipt from `compareAndSet`. The write passes the caller's version to the backend's own conditional write, so the check and the write are one step.
 
 ```ts
-import { defineTool, compareAndSet, outputSchemaFor, ToolSet } from "@mcp-write-safety/kit";
+import { defineTool, compareAndSet, VersionConflictError, NotAppliedError, q, outputSchemaFor, ToolSet } from "@mcp-write-safety/kit";
+
+// db: SQLite here (DatabaseSync from node:sqlite, or better-sqlite3), table documents(id, title, version).
+type Doc = { id: string; title: string; version: number };
+const getDoc = (id: string) => db.prepare("SELECT id, title, version FROM documents WHERE id = ?").get(id) as Doc | undefined;
 
 const updateTitle = defineTool<{ id: string; expected_version: number; title: string }>({
   kind: "write",
@@ -50,8 +54,16 @@ const updateTitle = defineTool<{ id: string; expected_version: number; title: st
   outputSchema: outputSchemaFor(),
   handler: ({ id, expected_version, title }) => compareAndSet({
     id, type: "document", expectedVersion: expected_version, readWith: { tool: "get_document", arguments: { id } },
-    read: async () => { const d = await db.get(id); return d && { version: d.version, state: d }; },
-    write: async () => { const d = await db.setTitle(id, title); return { version: d.version, changed: ["/title"] }; },
+    read: () => { const d = getDoc(id); return d && { version: d.version, state: d }; },
+    write: () => {
+      // The version goes to the backend's own check (Annex B-2): one statement compares and writes.
+      const r = db.prepare("UPDATE documents SET title = ?, version = version + 1 WHERE id = ? AND version = ?").run(title, id, expected_version);
+      if (r.changes === 0) {                       // another writer changed it since the read
+        const d = getDoc(id);
+        throw d ? new VersionConflictError({ version: d.version, state: d }) : new NotAppliedError(`document ${q(id)} was deleted`, { code: "not_found" });
+      }
+      return { version: expected_version + 1, changed: ["/title"] };
+    },
     conflictFields: ["id", "title", "version"],   // what a conflict may show; without it, none of the state
   }),
 });
@@ -67,6 +79,19 @@ With the 1.x SDK's low-level `Server`:
 server.setRequestHandler(ListToolsRequestSchema, async () => tools.list());
 server.setRequestHandler(CallToolRequestSchema, async (req) => tools.call(req.params.name, req.params.arguments));
 ```
+
+`compareAndSet` first compares the version it reads with the one the caller sent and refuses a stale one at once (`checked_by: "server"`). Another writer can still change the document after that read; the `WHERE ... AND version = ?` then matches no row, and the `VersionConflictError` becomes the same conflict (`code: "conflict"`, `checked_by: "backend"`). Nothing is overwritten either way.
+
+**Fallback: a backend with no conditional write.** Where the backend's update cannot carry the version, `write` writes without a condition and `compareAndSet`'s own comparison is the only check. Here the same table, written without the condition, stands in for such a backend:
+
+```ts
+write: () => {
+  db.prepare("UPDATE documents SET title = ?, version = version + 1 WHERE id = ?").run(title, id);
+  return { version: getDoc(id)?.version, changed: ["/title"] };
+},
+```
+
+This form has a race. `compareAndSet` reads, compares and writes under a per-object lock in this process, so calls through this server cannot interleave, but a writer that reaches the backend another way (a second server process, a job, the backend's own UI) can still land between the comparison and the write, and its change is then lost without a conflict. Say in the tool's description that stale writes are detected only on a best-effort basis (MWS-CONC-5, Annex B-3).
 
 Every helper can also be used on its own inside an existing handler. `examples/notes-server` is a complete server built only with the kit.
 

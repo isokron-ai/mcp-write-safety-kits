@@ -41,31 +41,38 @@ pip install -e .            # from this folder; brings the MCP Python SDK
 ```
 
 ```python
+import sqlite3
+
 from mcp.server.mcpserver import MCPServer          # SDK 2.x; on 1.x: from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult
 from mws_kit import Snapshot, VersionConflict, VersionGuard, WriteSafety, read_answer
 
-notes = {"n-1": {"id": "n-1", "title": "Draft", "version": 1}}
+db = sqlite3.connect(":memory:", check_same_thread=False)
+db.row_factory = sqlite3.Row
+db.execute("CREATE TABLE notes (id TEXT PRIMARY KEY, title TEXT, version INTEGER)")
+db.execute("INSERT INTO notes VALUES ('n-1', 'Draft', 1)")
 
 def read(note_id):
-    n = notes.get(note_id)
-    return None if n is None else Snapshot(dict(n), n["version"])
+    row = db.execute("SELECT id, title, version FROM notes WHERE id = ?", (note_id,)).fetchone()
+    return None if row is None else Snapshot(dict(row), row["version"])
 
 def write(note_id, change, expected_version):
-    n = notes[note_id]
-    if n["version"] != expected_version:               # the store's own check (Annex B-2)
-        raise VersionConflict(Snapshot(dict(n), n["version"]))
-    notes[note_id] = {**n, **change, "version": n["version"] + 1}
+    # The version goes to the store's own check (Annex B-2): one statement compares and writes.
+    cur = db.execute("UPDATE notes SET title = ?, version = version + 1 WHERE id = ? AND version = ?",
+                     (change["title"], note_id, expected_version))
+    if cur.rowcount == 0:                  # another writer changed the note since the caller read it
+        raise VersionConflict()            # the guard reads the current state for the conflict
     return read(note_id)
 
 server = MCPServer("notes")
 kit = WriteSafety(server)            # strict inputs for every tool registered through the kit
 guard = VersionGuard(read=read, write=write, read_tool="get_note", noun="note",
+                     precheck=False,     # every conflict comes from the store's check
                      state_fields=["id", "title", "version"])   # what a conflict may show; without it, none
 
 @kit.read_tool(open_world=False)
 def get_note(id: str) -> CallToolResult:
-    return read_answer(notes[id])
+    return read_answer(read(id).state)
 
 @kit.write_tool(read_tool="get_note", read_arguments={"id": "id"}, version_argument="expected_version",
                 destructive=True, idempotent=True, open_world=False)
@@ -73,10 +80,33 @@ def rename_note(id: str, expected_version: int, title: str) -> CallToolResult:
     return guard.apply(id, expected_version, {"title": title})
 ```
 
-`rename_note` now refuses a stale version with a conflict that carries the current state, refuses
-`title: 5` or a misspelled argument instead of converting or dropping it, returns a receipt naming
-the changed field and the new version, declares all four annotation hints, and turns an exception
-in the handler into an "outcome unknown" result that names `get_note` as the read that settles it.
+`rename_note` now passes the caller's version to the store, whose
+`UPDATE ... WHERE id = ? AND version = ?` compares and writes in one step, so no other writer can
+land between the check and the write. A stale version matches no row, and the guard returns a
+conflict (`code: "conflict"`, `checked_by: "backend"`) that carries the current state. The tool also refuses `title: 5` or a
+misspelled argument instead of converting or dropping it, returns a receipt naming the changed field
+and the new version, declares all four annotation hints, and turns an exception in the handler into
+an "outcome unknown" result that names `get_note` as the read that settles it.
+
+**Fallback: a backend with no conditional write.** Where the backend's update cannot carry the
+version, `write` writes without a condition and the guard's own comparison (`precheck`, on by
+default) is the only check. Here the same table, written without the condition, stands in for such
+a backend:
+
+```python
+def write(note_id, change, expected_version):
+    db.execute("UPDATE notes SET title = ?, version = version + 1 WHERE id = ?", (change["title"], note_id))
+    return read(note_id)
+
+guard = VersionGuard(read=read, write=write, read_tool="get_note", noun="note",   # precheck on
+                     state_fields=["id", "title", "version"])
+```
+
+This form has a race. The guard reads, compares and writes under a per-object lock in this
+process, so calls through this server cannot interleave, but a writer that reaches the backend
+another way (a second server process, a job, the backend's own UI) can still land between the
+comparison and the write, and its change is then lost without a conflict. Say in the tool's
+description that stale writes are detected only on a best-effort basis (MWS-CONC-5, Annex B-3).
 
 ## The result shape (write-result/0.1)
 
