@@ -133,3 +133,11 @@ test("withStrictInput does not call the handler on a refusal", async () => {
   assert.equal(await w.handler({ n: 1 }), 1);
   assert.equal(calls, 1);
 });
+
+test("a free-form object must say additionalProperties: true; otherwise it is closed like the rest", () => {
+  const closed = strictInput({ type: "object", properties: { meta: { type: "object" } } });
+  assert.equal(closed.schema.properties!.meta!.additionalProperties, false);
+  assert.ok(!closed.validate({ meta: { a: 1 } }).ok);
+  const open = strictInput({ type: "object", properties: { meta: { type: "object", additionalProperties: true } } });
+  assert.ok(open.validate({ meta: { a: 1 } }).ok);
+});

@@ -157,3 +157,16 @@ test("a result without the shape is still stored and replayed", async () => {
   assert.equal(n, 1);
   assert.match(text(b), /^Replay:.*\nmade 1$/s);
 });
+
+test("a write that throws a refusal releases the key", async () => {
+  const { NotAppliedError } = await import("../src/index.js");
+  const store = new MemoryIdempotencyStore();
+  let n = 0;
+  const run = (fail: boolean) => withIdempotency({ store, scope: "s", args: { idempotency_key: "key-0012" }, settleWith: "g" }, async () => {
+    if (fail) throw new NotAppliedError("refused");
+    return applied({ summary: `made ${++n}`, object: { id: n } });
+  });
+  await assert.rejects(run(true), NotAppliedError);
+  assert.equal(readResult(await run(false))!.outcome, "applied");
+  assert.equal(n, 1);
+});

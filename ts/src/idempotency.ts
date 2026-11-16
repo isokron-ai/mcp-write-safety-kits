@@ -23,7 +23,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { q, readResult, toToolResult, notApplied, type MwsResult } from "./result.js";
-import { unknownOutcome } from "./outcome.js";
+import { classifyError, unknownOutcome } from "./outcome.js";
 import type { CallToolResult } from "./types.js";
 
 /** The state of a key, as `begin` finds it. */
@@ -218,7 +218,9 @@ export async function withIdempotency(o: IdempotencyOptions, write: () => Promis
         try {
           result = await write();
         } catch (e) {
-          await o.store.markUnknown(o.scope, key, b.token);
+          // A refusal, or a request that was never sent, applied nothing: the key is free again.
+          if (classifyError(e) === "not_applied") await o.store.release(o.scope, key, b.token);
+          else await o.store.markUnknown(o.scope, key, b.token);
           throw e;
         }
         const shape = readResult(result);

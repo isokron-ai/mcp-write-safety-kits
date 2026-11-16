@@ -185,14 +185,14 @@ export function assertSupportedSchema(schema: JsonSchema, at = "inputSchema"): v
 /**
  * Returns a copy of the schema with `additionalProperties: false` written at every object level
  * that does not set it, so that the advertised schema says what the validator does: an argument it
- * does not define is refused (MWS-IN-2, IN-7 guidance). A level that sets it to true is kept.
+ * does not define is refused (MWS-IN-2, IN-7 guidance). A level that sets it to true is kept; that
+ * is how a free-form object is declared.
  */
 export function closeSchema(schema: JsonSchema): JsonSchema {
   const out: JsonSchema = { ...schema };
-  if (out.properties) {
-    out.properties = Object.fromEntries(Object.entries(out.properties).map(([k, s]) => [k, closeSchema(s)]));
-    if (out.additionalProperties === undefined) out.additionalProperties = false;
-  }
+  const types = out.type === undefined ? [] : Array.isArray(out.type) ? out.type : [out.type];
+  if (out.properties) out.properties = Object.fromEntries(Object.entries(out.properties).map(([k, s]) => [k, closeSchema(s)]));
+  if ((out.properties || types.includes("object")) && out.additionalProperties === undefined) out.additionalProperties = false;
   if (out.items) out.items = closeSchema(out.items);
   return out;
 }
