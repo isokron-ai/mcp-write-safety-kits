@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/isokron-ai/mcp-write-safety-kits/main/assets/mws-mark-128.png" alt="MCP Write-Safety Requirements mark" width="72" height="72">
+
 # mcp-write-safety-kit
 
 Python helpers for the write tools of an MCP server. Wrap your write handlers with them and the hard
@@ -8,7 +10,8 @@ idempotency keys, strict inputs, truthful results, unknown outcomes and explicit
 - No runtime dependency beyond the official MCP Python SDK (`mcp`). Works with the SDK's high-level
   server in both lines, `FastMCP` (1.x) and `MCPServer` (2.x), and with plain handlers on the
   low-level `Server`.
-- Apache-2.0, except the shape's schema file (CC BY 4.0). Not published yet.
+- Apache-2.0, except the shape's schema file (CC BY 4.0). Install: `pip install mcp-write-safety-kit`.
+- The requirements: [MCP Write-Safety Requirements 0.9](https://isokron.ai/mws). Source: [isokron-ai/mcp-write-safety-kits](https://github.com/isokron-ai/mcp-write-safety-kits/tree/main/py).
 
 **The kit helps a server meet MWS. Using it does not make a server conformant.** MWS gives a
 verdict per requirement and per write path, and only the tests decide it: run
@@ -37,7 +40,7 @@ Results use the **write-result shape 0.1** of MWS 0.9, Annex B, B-9. Before vers
 ## Quick start
 
 ```sh
-pip install -e .            # from this folder; brings the MCP Python SDK
+pip install mcp-write-safety-kit   # brings the MCP Python SDK
 ```
 
 ```python
