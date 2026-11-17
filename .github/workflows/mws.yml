@@ -1,8 +1,8 @@
 # Runs the mcp-writecheck tester (MWS 0.9) against both example servers, through the
 # isokron-ai/mcp-writecheck-action. Started by hand only.
 #
-# Until the tester is published, the action fetches it with the token in the secret MWS_CLI_TOKEN.
-# Where that secret is not set, the gate job says so and the writecheck jobs are skipped.
+# The tester is public (isokron-ai/mcp-write-safety): the action fetches and builds it at CLI_REF
+# with no token, and both jobs run on every dispatch.
 #
 # Each example keeps its store in the server's memory, and the tester starts the server itself on
 # the runner, so a full run writes only to a store that exists for that run.
@@ -24,33 +24,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # mcp-writecheck pinned to the spec text with B-9 v2 (ae5d7d7). It cannot adopt a result shape by
-  # name and version, so each manifest reads the kits' first text block (spec 7.3, rule 11).
-  CLI_REF: f573a240efbb5fe7e0d972182d16676cb332d8b2
-  TS_PLAN_HASH: 3c1fb14524fdcc78
-  PY_PLAN_HASH: c988c7166532baf4
+  # mcp-writecheck 0.1.0 (MWS 0.9) at the public isokron-ai/mcp-write-safety 3af41c6. It cannot adopt a
+  # result shape by name and version, so each manifest reads the kits' first text block (spec 7.3, rule 11).
+  CLI_REF: 3af41c6fb79d66afdea41ebcabc6f7fc18e77c6a
+  TS_PLAN_HASH: 1d6ef094bc58188f
+  PY_PLAN_HASH: abd730313afc7ed2
 
 jobs:
-  gate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      ready: ${{ steps.check.outputs.ready }}
-    steps:
-      - id: check
-        env:
-          HAS_TOKEN: ${{ secrets.MWS_CLI_TOKEN != '' }}
-        run: |
-          if [ "$HAS_TOKEN" = "true" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "MWS_CLI_TOKEN is not set for this repository: the writecheck jobs are skipped." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
   ts-notes-server:
-    needs: gate
-    if: needs.gate.outputs.ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -65,14 +46,13 @@ jobs:
         run: |
           npm ci --ignore-scripts --no-audit --no-fund && npm run build
           cd examples/notes-server && npm ci --ignore-scripts --no-audit --no-fund && npm run build
-      - uses: isokron-ai/mcp-writecheck-action@dbc1f5919786b0b400d5cb0c24023c34e4b05fa1 # main, 15 Nov 2026
+      - uses: isokron-ai/mcp-writecheck-action@d610653680d9083dadee208e2ea0de8bbc1e98b1 # v0.1.2
         with:
           manifest: ts/examples/notes-server/writecheck.yaml
           mode: plan
           cli-ref: ${{ env.CLI_REF }}
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
           artifact-name: mws-ts-plan
-      - uses: isokron-ai/mcp-writecheck-action@dbc1f5919786b0b400d5cb0c24023c34e4b05fa1 # main, 15 Nov 2026
+      - uses: isokron-ai/mcp-writecheck-action@d610653680d9083dadee208e2ea0de8bbc1e98b1 # v0.1.2
         with:
           manifest: ts/examples/notes-server/writecheck.yaml
           mode: full
@@ -80,12 +60,9 @@ jobs:
           confirm-target: notes-server
           plan-hash: ${{ env.TS_PLAN_HASH }}
           cli-ref: ${{ env.CLI_REF }}
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
           artifact-name: mws-ts-results
 
   py-notes-server:
-    needs: gate
-    if: needs.gate.outputs.ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -101,14 +78,13 @@ jobs:
       - name: Install the kit (the manifest starts the server with `python server.py`)
         working-directory: py
         run: python -m pip install -e . "mcp>=2,<3"
-      - uses: isokron-ai/mcp-writecheck-action@dbc1f5919786b0b400d5cb0c24023c34e4b05fa1 # main, 15 Nov 2026
+      - uses: isokron-ai/mcp-writecheck-action@d610653680d9083dadee208e2ea0de8bbc1e98b1 # v0.1.2
         with:
           manifest: py/examples/notes_server/writecheck.yaml
           mode: plan
           cli-ref: ${{ env.CLI_REF }}
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
           artifact-name: mws-py-plan
-      - uses: isokron-ai/mcp-writecheck-action@dbc1f5919786b0b400d5cb0c24023c34e4b05fa1 # main, 15 Nov 2026
+      - uses: isokron-ai/mcp-writecheck-action@d610653680d9083dadee208e2ea0de8bbc1e98b1 # v0.1.2
         with:
           manifest: py/examples/notes_server/writecheck.yaml
           mode: full
@@ -116,5 +92,4 @@ jobs:
           confirm-target: notes-server
           plan-hash: ${{ env.PY_PLAN_HASH }}
           cli-ref: ${{ env.CLI_REF }}
-          cli-token: ${{ secrets.MWS_CLI_TOKEN }}
           artifact-name: mws-py-results
